@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Canvas AI Assistant",
+  "version": "0.1.0",
+  "description": "Extracts Canvas course page data and sends it to an AI backend.",
+  "permissions": ["activeTab", "scripting", "sidePanel", "tabs"],
+  "host_permissions": [
+    "http://localhost:8000/*",
+    "https://*.instructure.com/*",
+    "https://canvas.case.edu/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.instructure.com/*", "https://canvas.case.edu/*"],
+      "js": ["content/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Open Canvas AI"
+  },
+  "icons": {
+    "16": "icons/icon.svg",
+    "48": "icons/icon.svg",
+    "128": "icons/icon.svg"
+  }
+}
