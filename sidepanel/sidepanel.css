@@ -7,6 +7,7 @@
   --muted: #64748b;
   --primary: #2563eb;
   --primary-hover: #1d4ed8;
+  --danger: #b91c1c;
 }
 
 * {
@@ -72,28 +73,84 @@ button:disabled {
 }
 
 .status-card,
-pre {
+.summary-card,
+.material-card {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--card);
 }
 
-.status-card {
+.status-card,
+.summary-card,
+.material-card {
   padding: 12px;
 }
 
-.status-card p {
+.status-card p,
+.summary-card p {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
 }
 
-pre {
-  max-height: 500px;
+.materials-section {
+  display: grid;
+  gap: 8px;
+}
+
+.materials-list {
+  display: grid;
+  gap: 12px;
+}
+
+.material-card {
+  display: grid;
+  gap: 10px;
+}
+
+.section-title {
   margin: 0;
-  padding: 12px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.material-link:hover {
+  text-decoration: underline;
+}
+
+.material-title,
+.material-meta,
+.empty-state,
+.error-text {
+  margin: 0;
+  color: var(--muted);
   font-size: 12px;
+  line-height: 1.4;
+}
+
+.error-text {
+  color: var(--danger);
+}
+
+.materials-list-inner {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.material-item {
+  display: grid;
+  gap: 3px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.material-link {
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
 }

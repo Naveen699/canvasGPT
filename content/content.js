@@ -72,15 +72,28 @@ function extractPageData() {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type !== "EXTRACT_PAGE_DATA") {
-    return false;
+  if (message.type === "EXTRACT_PAGE_DATA") {
+    try {
+      sendResponse({ success: true, data: extractPageData() });
+    } catch (error) {
+      sendResponse({ success: false, error: error.message });
+    }
+
+    return true;
   }
 
-  try {
-    sendResponse({ success: true, data: extractPageData() });
-  } catch (error) {
-    sendResponse({ success: false, error: error.message });
+  if (message.type === "GET_CANVAS_COURSE_MATERIALS") {
+    if (!window.CanvasSessionApi?.getCurrentCanvasCourseMaterials) {
+      sendResponse({ success: false, error: "Canvas API client is not loaded." });
+      return true;
+    }
+
+    window.CanvasSessionApi.getCurrentCanvasCourseMaterials()
+      .then((data) => sendResponse({ success: true, data }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+
+    return true;
   }
 
-  return true;
+  return false;
 });

@@ -1,5 +1,5 @@
 const BACKEND_EXTRACT_URL = "http://localhost:8000/extract";
-const CONTENT_SCRIPT_PATH = "content/content.js";
+const CONTENT_SCRIPT_FILES = ["content/canvasApiClient.js", "content/content.js"];
 
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
@@ -46,7 +46,7 @@ async function injectContentScript(tab) {
 
   await chrome.scripting.executeScript({
     target: { tabId: tab.id },
-    files: [CONTENT_SCRIPT_PATH]
+    files: CONTENT_SCRIPT_FILES
   });
 }
 
@@ -92,6 +92,19 @@ async function sendExtractedDataToBackend(pageData) {
   return response.json();
 }
 
+async function getActiveCourseMaterials() {
+  const tab = await getActiveTab();
+  const response = await sendMessageToTabWithInjectionFallback(tab, {
+    type: "GET_CANVAS_COURSE_MATERIALS"
+  });
+
+  if (!response?.success) {
+    throw new Error(response?.error || "Failed to load Canvas course materials.");
+  }
+
+  return response.data;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "EXTRACT_ACTIVE_PAGE_DATA") {
     extractActivePageData()
@@ -103,6 +116,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "SEND_PAGE_DATA_TO_BACKEND") {
     sendExtractedDataToBackend(message.data)
+      .then((data) => sendResponse({ success: true, data }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+
+    return true;
+  }
+
+  if (message.type === "GET_ACTIVE_COURSE_MATERIALS") {
+    getActiveCourseMaterials()
       .then((data) => sendResponse({ success: true, data }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
 

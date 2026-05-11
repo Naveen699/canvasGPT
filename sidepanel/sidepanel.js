@@ -1,13 +1,10 @@
-let latestExtractedData = null;
-
-const output = document.getElementById("output");
 const status = document.getElementById("status");
-const extractBtn = document.getElementById("extractBtn");
-const sendBtn = document.getElementById("sendBtn");
+const loadMaterialsBtn = document.getElementById("loadMaterialsBtn");
+const summary = document.getElementById("summary");
+const materialsList = document.getElementById("materialsList");
 
 function setBusy(isBusy) {
-  extractBtn.disabled = isBusy;
-  sendBtn.disabled = isBusy;
+  loadMaterialsBtn.disabled = isBusy;
 }
 
 function setStatus(message) {
@@ -32,46 +29,143 @@ function sendRuntimeMessage(message) {
   });
 }
 
-extractBtn.addEventListener("click", async () => {
+function clearElement(element) {
+  while (element.firstChild) {
+    element.removeChild(element.firstChild);
+  }
+}
+
+function createTextElement(tagName, className, text) {
+  const element = document.createElement(tagName);
+  element.className = className;
+  element.textContent = text;
+  return element;
+}
+
+function createLink(className, text, href) {
+  const link = document.createElement("a");
+  link.className = className;
+  link.textContent = text;
+  link.href = href;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  return link;
+}
+
+function renderSummary(data) {
+  const materials = data.materials || {};
+  const counts = {
+    modules: materials.modules?.length || 0,
+    pages: materials.pages?.length || 0,
+    assignments: materials.assignments?.length || 0,
+    announcements: materials.announcements?.length || 0,
+    discussions: materials.discussions?.length || 0,
+    links: data.links?.length || 0,
+    files: data.files?.length || 0
+  };
+  const courseName = data.course?.name || data.course?.course_code || `Course ${data.courseId}`;
+
+  summary.hidden = false;
+  summary.innerHTML = "";
+  summary.append(
+    createTextElement(
+      "p",
+      "",
+      `${courseName}: ${counts.modules} module items, ${counts.pages} pages, ${counts.assignments} assignments, ${counts.announcements} announcements, ${counts.discussions} discussions, ${counts.links} links, ${counts.files} linked files.`
+    )
+  );
+
+  if (data.unavailable?.length) {
+    summary.append(
+      createTextElement("p", "error-text", `Some endpoints were unavailable: ${data.unavailable.join(", ")}`)
+    );
+  }
+}
+
+function renderMaterialItem(material) {
+  const item = document.createElement("li");
+  item.className = "material-item";
+  const title = material.title || material.text || material.name || "Untitled";
+  const href = material.htmlUrl || material.href || material.url || "";
+
+  if (href) {
+    item.append(createLink("material-link", title, href));
+  } else {
+    item.append(createTextElement("p", "material-title", title));
+  }
+
+  const metaParts = [
+    material.type || material.itemType || "",
+    material.moduleName ? `Module: ${material.moduleName}` : "",
+    material.dueAt ? `Due ${new Date(material.dueAt).toLocaleDateString()}` : "",
+    material.contentType || "",
+    material.size ? `${material.size} bytes` : ""
+  ].filter(Boolean);
+
+  if (metaParts.length) {
+    item.append(createTextElement("p", "material-meta", metaParts.join(" - ")));
+  }
+
+  return item;
+}
+
+function renderSection(title, items) {
+  const card = document.createElement("article");
+  card.className = "material-card";
+  card.append(createTextElement("h3", "section-title", `${title} (${items.length})`));
+
+  if (!items.length) {
+    card.append(createTextElement("p", "empty-state", `No ${title.toLowerCase()} found.`));
+    return card;
+  }
+
+  const list = document.createElement("ul");
+  list.className = "materials-list-inner";
+  items.forEach((item) => list.append(renderMaterialItem(item)));
+  card.append(list);
+
+  return card;
+}
+
+function normalizeFiles(files = []) {
+  return files.map((file) => ({
+    type: "file",
+    title: file.display_name || file.filename || `File ${file.id}`,
+    htmlUrl: file.url || file.preview_url || "",
+    contentType: file["content-type"] || file.content_type || "",
+    size: file.size || 0
+  }));
+}
+
+function renderMaterials(data) {
+  const materials = data.materials || {};
+  clearElement(materialsList);
+  materialsList.append(renderSection("Module Items", materials.modules || []));
+  materialsList.append(renderSection("Pages", materials.pages || []));
+  materialsList.append(renderSection("Assignments", materials.assignments || []));
+  materialsList.append(renderSection("Announcements", materials.announcements || []));
+  materialsList.append(renderSection("Discussions", materials.discussions || []));
+  materialsList.append(renderSection("Rendered and Content Links", data.links || []));
+  materialsList.append(renderSection("Linked Files", normalizeFiles(data.files)));
+}
+
+loadMaterialsBtn.addEventListener("click", async () => {
   setBusy(true);
-  setStatus("Extracting data from the active Canvas page...");
+  setStatus("Loading student-visible course materials from Canvas...");
 
   try {
-    latestExtractedData = await sendRuntimeMessage({
-      type: "EXTRACT_ACTIVE_PAGE_DATA"
+    const data = await sendRuntimeMessage({
+      type: "GET_ACTIVE_COURSE_MATERIALS"
     });
 
-    output.textContent = JSON.stringify(latestExtractedData, null, 2);
-    setStatus("Page data extracted.");
+    renderSummary(data);
+    renderMaterials(data);
+    setStatus("Visible course materials loaded.");
   } catch (error) {
-    output.textContent = `Error: ${error.message}`;
-    setStatus("Extraction failed.");
-  } finally {
-    setBusy(false);
-  }
-});
-
-sendBtn.addEventListener("click", async () => {
-  if (!latestExtractedData) {
-    setStatus("Extract page data before sending it to the backend.");
-    output.textContent = "Extract data first.";
-    return;
-  }
-
-  setBusy(true);
-  setStatus("Sending extracted data to the backend...");
-
-  try {
-    const result = await sendRuntimeMessage({
-      type: "SEND_PAGE_DATA_TO_BACKEND",
-      data: latestExtractedData
-    });
-
-    output.textContent = JSON.stringify(result, null, 2);
-    setStatus("Backend received the extracted data.");
-  } catch (error) {
-    output.textContent = `Backend error: ${error.message}`;
-    setStatus("Backend request failed.");
+    summary.hidden = true;
+    clearElement(materialsList);
+    materialsList.append(createTextElement("p", "error-text", error.message));
+    setStatus("Could not load visible course materials.");
   } finally {
     setBusy(false);
   }

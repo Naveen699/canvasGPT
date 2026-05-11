@@ -10,22 +10,25 @@
     <main class="app">
       <header>
         <p class="eyebrow">Canvas AI Assistant</p>
-        <h1>Ask smarter questions about the current Canvas page.</h1>
+        <h1>Visible Course Materials</h1>
       </header>
 
-      <section class="actions" aria-label="Page data actions">
-        <button id="extractBtn" type="button">Extract Page Data</button>
-        <button id="sendBtn" type="button">Send to Backend</button>
+      <section class="actions" aria-label="Course material actions">
+        <button id="loadMaterialsBtn" type="button">Load Visible Course Materials</button>
       </section>
 
       <section class="status-card" aria-live="polite">
         <h2>Status</h2>
-        <p id="status">No data extracted yet.</p>
+        <p id="status">Open a Canvas course page, then load visible materials.</p>
       </section>
 
-      <section>
-        <h2>Extracted Data</h2>
-        <pre id="output">No data extracted yet.</pre>
+      <section class="summary-card" id="summary" hidden></section>
+
+      <section class="materials-section">
+        <h2>Materials</h2>
+        <div id="materialsList" class="materials-list">
+          <p class="empty-state">No materials loaded yet.</p>
+        </div>
       </section>
     </main>
 
