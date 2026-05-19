@@ -74,23 +74,42 @@ button:disabled {
 
 .status-card,
 .summary-card,
+.settings-card,
 .material-card {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--card);
-}
-
-.status-card,
-.summary-card,
-.material-card {
   padding: 12px;
 }
 
 .status-card p,
-.summary-card p {
+.summary-card p,
+.settings-card p {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
+}
+
+.domain-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+input {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: white;
+  font: inherit;
+}
+
+.domain-list {
+  margin-top: 8px !important;
+  overflow-wrap: anywhere;
 }
 
 .materials-section {

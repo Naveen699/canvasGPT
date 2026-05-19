@@ -17,9 +17,30 @@
         <button id="loadMaterialsBtn" type="button">Load Visible Course Materials</button>
       </section>
 
+      <section class="status-card" aria-label="Canvas page">
+        <h2>Current Page</h2>
+        <p id="pageContext">Checking active tab...</p>
+      </section>
+
       <section class="status-card" aria-live="polite">
         <h2>Status</h2>
         <p id="status">Open a Canvas course page, then load visible materials.</p>
+      </section>
+
+      <section class="settings-card" aria-label="Canvas domain settings">
+        <h2>Canvas Domains</h2>
+        <p id="domainHelp">Default: *.instructure.com, canvas.case.edu</p>
+        <form id="domainForm" class="domain-form">
+          <input
+            id="domainInput"
+            type="text"
+            autocomplete="off"
+            placeholder="school.instructure.com"
+            aria-label="Canvas domain"
+          />
+          <button id="addDomainBtn" type="submit">Add Domain</button>
+        </form>
+        <p id="domainList" class="domain-list"></p>
       </section>
 
       <section class="summary-card" id="summary" hidden></section>
@@ -32,6 +53,8 @@
       </section>
     </main>
 
+    <script src="../canvas/detect.js"></script>
+    <script src="../settings/canvas-domains.js"></script>
     <script src="sidepanel.js"></script>
   </body>
 </html>

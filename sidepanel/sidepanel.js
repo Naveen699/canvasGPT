@@ -1,10 +1,16 @@
 const status = document.getElementById("status");
+const pageContext = document.getElementById("pageContext");
 const loadMaterialsBtn = document.getElementById("loadMaterialsBtn");
 const summary = document.getElementById("summary");
 const materialsList = document.getElementById("materialsList");
+const domainForm = document.getElementById("domainForm");
+const domainInput = document.getElementById("domainInput");
+const domainList = document.getElementById("domainList");
+
+let activeTabIsCanvas = false;
 
 function setBusy(isBusy) {
-  loadMaterialsBtn.disabled = isBusy;
+  loadMaterialsBtn.disabled = isBusy || !activeTabIsCanvas;
 }
 
 function setStatus(message) {
@@ -27,6 +33,45 @@ function sendRuntimeMessage(message) {
       resolve(response.data);
     });
   });
+}
+
+function formatRouteLabel(routeInfo) {
+  if (!routeInfo) {
+    return "Not a configured Canvas page.";
+  }
+
+  const courseLabel = routeInfo.courseId ? `Course ${routeInfo.courseId}` : "Canvas";
+  return `${courseLabel} - ${routeInfo.route.replaceAll("_", " ")}`;
+}
+
+function renderDomainList(domains = [], defaultDomains = CanvasDetection.getDefaultCanvasDomainPatterns()) {
+  const configuredText = domains.length ? domains.join(", ") : "none";
+  domainList.textContent = `Configured: ${configuredText}. Defaults: ${defaultDomains.join(", ")}.`;
+}
+
+async function refreshCanvasContext() {
+  try {
+    const context = await sendRuntimeMessage({
+      type: "GET_ACTIVE_TAB_CANVAS_CONTEXT"
+    });
+
+    activeTabIsCanvas = Boolean(context.isCanvas && context.routeInfo?.courseId);
+    pageContext.textContent = activeTabIsCanvas
+      ? `${formatRouteLabel(context.routeInfo)}. ${context.title || context.url}`
+      : "Open a Canvas course page to use Canvas context.";
+    renderDomainList(context.configuredDomains || [], context.defaultDomains || []);
+    setStatus(
+      activeTabIsCanvas
+        ? "Canvas page detected. Ready to load visible course materials."
+        : "Open a Canvas course page, then load visible materials."
+    );
+  } catch (error) {
+    activeTabIsCanvas = false;
+    pageContext.textContent = error.message;
+    setStatus("Could not inspect the active tab.");
+  }
+
+  setBusy(false);
 }
 
 function clearElement(element) {
@@ -170,3 +215,29 @@ loadMaterialsBtn.addEventListener("click", async () => {
     setBusy(false);
   }
 });
+
+domainForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const domain = domainInput.value.trim();
+  if (!domain) {
+    return;
+  }
+
+  setStatus("Saving Canvas domain...");
+
+  try {
+    const domains = await sendRuntimeMessage({
+      type: "ADD_CANVAS_DOMAIN",
+      domain
+    });
+
+    domainInput.value = "";
+    renderDomainList(domains);
+    await refreshCanvasContext();
+  } catch (error) {
+    setStatus(error.message);
+  }
+});
+
+refreshCanvasContext();

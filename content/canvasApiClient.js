@@ -182,6 +182,33 @@ async function loadOptionalMaterial(name, loadFn) {
   }
 }
 
+function isLikelyCanvasCourse(data, courseId) {
+  if (!data || typeof data !== "object") {
+    return false;
+  }
+
+  const idMatches = String(data.id || "") === String(courseId);
+  const hasCanvasCourseFields = [
+    "name",
+    "course_code",
+    "workflow_state",
+    "account_id",
+    "enrollments"
+  ].some((field) => Object.prototype.hasOwnProperty.call(data, field));
+
+  return idMatches && hasCanvasCourseFields;
+}
+
+async function confirmCanvasCourse(client, courseId) {
+  const course = await client.getCourse(courseId, { include: ["term", "course_image"] });
+
+  if (!isLikelyCanvasCourse(course, courseId)) {
+    throw new Error("The active page did not return a valid Canvas course API response.");
+  }
+
+  return course;
+}
+
 class CanvasSessionApiClient {
   async request(pathOrUrl, params = {}) {
     const url = /^https?:\/\//.test(pathOrUrl)
@@ -477,17 +504,14 @@ function getLinksFromModuleMaterials(materials = []) {
 async function getCurrentCanvasCourseMaterials() {
   const courseId = getCurrentCourseId();
   const client = new CanvasSessionApiClient();
+  const course = await confirmCanvasCourse(client, courseId);
   const [
-    courseResult,
     modulesResult,
     pagesResult,
     assignmentsResult,
     announcementsResult,
     discussionsResult
   ] = await Promise.all([
-    loadOptionalMaterial("course", () =>
-      client.getCourse(courseId, { include: ["term", "course_image"] })
-    ),
     loadOptionalMaterial("modules", () => client.listModuleGraph(courseId)),
     loadOptionalMaterial("pages", () => client.listCoursePages(courseId, { include: ["body"] })),
     loadOptionalMaterial("assignments", () => client.listAssignments(courseId, { orderBy: "position" })),
@@ -538,7 +562,6 @@ async function getCurrentCanvasCourseMaterials() {
   const linkedFilesResult = await getFilesByIds(client, linkedFileIds);
   const files = getUniqueFiles(linkedFilesResult.files);
   const errors = [
-    courseResult.error,
     modulesResult.error,
     pagesResult.error,
     assignmentsResult.error,
@@ -550,7 +573,7 @@ async function getCurrentCanvasCourseMaterials() {
   return {
     canvasBaseUrl: window.location.origin,
     courseId,
-    course: courseResult.data,
+    course,
     modules,
     materials: {
       modules: moduleMaterials,

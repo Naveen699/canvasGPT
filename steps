@@ -1,0 +1,370 @@
+  1. Extension Shell And Canvas Detection
+
+  Build the minimum Chrome extension surface first.
+
+  Owns:
+
+  - Manifest permissions
+  - Side panel entry point
+  - Canvas domain setup
+  - Canvas route detection
+  - Non-Canvas empty state
+
+  Relevant PRD areas:
+
+  - Goals and constraints: canvas-lms-extension-prd.md:11
+  - Canvas detection: canvas-lms-extension-prd.md:249
+  - Permissions: canvas-lms-extension-prd.md:749
+
+  Suggested files:
+
+  src/canvas/detect.ts
+  src/canvas/permissions.ts
+  src/canvas/types.ts
+  src/extension/side-panel.ts
+  src/settings/canvas-domains.ts
+
+  Exit criteria:
+
+  - Extension opens a side panel only on configured Canvas domains.
+  - Current tab URL maps to assignment, modules, page, syllabus, file, discussion, announcement, quiz, or unknown.
+  - Unknown or unsupported Canvas pages fail gracefully.
+
+  2. Current Page Collection
+
+  Implement the safest useful context path: read only the active Canvas page.
+
+  Owns:
+
+  - chrome.scripting.executeScript
+  - Active page HTML/text capture
+  - Raw HTML lifecycle
+  - Collection status messages
+
+  Relevant PRD areas:
+
+  - Active page extraction: canvas-lms-extension-prd.md:174
+  - Raw HTML must be transient: canvas-lms-extension-prd.md:194
+
+  Suggested files:
+
+  src/canvas/collect/active-page.ts
+  src/canvas/collect/status.ts
+  src/canvas/collect/types.ts
+
+  Exit criteria:
+
+  - Side panel can collect active Canvas page title, URL, text, content type, and transient HTML.
+  - Collection errors do not break the UI.
+  - Raw HTML is passed directly into parsing and then discarded.
+
+  3. Parser Layer
+
+  Normalize Canvas pages into a consistent internal document model.
+
+  Owns:
+
+  - Base parser
+  - Assignment parser
+  - Page/wiki parser
+  - Syllabus parser
+  - Module parser
+  - Conservative fallback parsing
+
+  Relevant PRD areas:
+
+  - Parser contract: canvas-lms-extension-prd.md:303
+  - Base parser requirements: canvas-lms-extension-prd.md:331
+  - Assignment parser requirements: canvas-lms-extension-prd.md:344
+
+  Suggested files:
+
+  src/canvas/parse/index.ts
+  src/canvas/parse/base.ts
+  src/canvas/parse/assignment.ts
+  src/canvas/parse/module.ts
+  src/canvas/parse/page.ts
+  src/canvas/parse/syllabus.ts
+  src/canvas/parse/sanitize.ts
+
+  Exit criteria:
+
+  - Assignment pages extract title, instructions, due date text, points, submission info, and visible rubric text.
+  - Modules extract module titles and visible item links without automatically fetching them.
+  - Parsers return CanvasContextDoc[].
+  - Parser tests run against redacted Canvas fixtures.
+
+  4. Chunking And Local Retrieval
+
+  Turn normalized documents into searchable snippets before involving any model.
+
+  Owns:
+
+  - Chunk generation
+  - Token estimates
+  - Keyword scoring
+  - Query intent boosts
+  - Retrieval limits
+
+  Relevant PRD areas:
+
+  - Chunking rules: canvas-lms-extension-prd.md:429
+  - Retrieval MVP: canvas-lms-extension-prd.md:457
+
+  Suggested files:
+
+  src/canvas/retrieval/chunk.ts
+  src/canvas/retrieval/keyword.ts
+  src/canvas/retrieval/intent.ts
+  src/canvas/retrieval/hybrid.ts
+
+  Exit criteria:
+
+  - Current page documents become 500-900 token chunks.
+  - Query “what do I need to submit?” boosts assignment/rubric/submission chunks.
+  - Retrieval returns max 8 chunks, max 6 sources, and estimated token count.
+
+  5. Prompt And Citation Builder
+
+  Only after retrieval works, build the model-facing Canvas prompt.
+
+  Owns:
+
+  - Grounded system prompt
+  - Structured source blocks
+  - Citation metadata
+  - “Not found in collected context” behavior
+
+  Relevant PRD areas:
+
+  - Prompt construction: canvas-lms-extension-prd.md:491
+  - Citation requirement: canvas-lms-extension-prd.md:526
+
+  Suggested files:
+
+  src/canvas/prompt/build-canvas-prompt.ts
+  src/canvas/prompt/citations.ts
+  src/canvas/prompt/source-format.ts
+
+  Exit criteria:
+
+  - Prompt contains only retrieved snippets, not full page dumps.
+  - Every source block has title, type, URL, and collection timestamp.
+  - Prompt builder is unit-tested independently of the LLM provider.
+
+  6. Canvas Chat Mode Integration
+
+  Wire the Canvas-specific context pipeline into the existing chat/model streaming flow.
+
+  Owns:
+
+  - canvasChatMode
+  - Routing priority
+  - Selected model handling
+  - Abort/cancellation support
+  - Source metadata propagation to UI
+
+  Relevant PRD areas:
+
+  - Canvas chat mode: canvas-lms-extension-prd.md:715
+  - MVP must stream through model adapter: canvas-lms-extension-prd.md:840
+
+  Suggested files:
+
+  src/canvas/chat/canvasChatMode.ts
+  src/chat/routing.ts
+  src/chat/types.ts
+
+  Exit criteria:
+
+  - If active tab is Canvas and Canvas context is enabled, chat uses canvasChatMode.
+  - If Canvas context is disabled, normal chat is used.
+  - Streaming answer includes source metadata for UI chips.
+
+  7. Source-Aware UI
+
+  Build the visible student experience around what context is being used.
+
+  Owns:
+
+  - Current course/page indicator
+  - Context scope selector
+  - “Using Canvas context” toggle
+  - Source chips
+  - Collection status
+  - Cloud/local model disclosure
+
+  Relevant PRD areas:
+
+  - Desired side panel UX: canvas-lms-extension-prd.md:106
+  - Cloud warning: canvas-lms-extension-prd.md:588
+  - Acceptance criteria: canvas-lms-extension-prd.md:881
+
+  Suggested files:
+
+  src/canvas/ui/CanvasContextScope.tsx
+  src/canvas/ui/CanvasSourceChips.tsx
+  src/canvas/ui/CanvasCollectionStatus.tsx
+  src/canvas/ui/CanvasProviderNotice.tsx
+  src/canvas/ui/CanvasPageIndicator.tsx
+
+  Exit criteria:
+
+  - Student can see which Canvas page is being used.
+  - Answer displays source chips with title, type, URL, and timestamp.
+  - Cloud model warning appears before sending Canvas snippets.
+
+  8. Short-Lived Cache
+
+  Add persistence only after current-page chat works end to end.
+
+  Owns:
+
+  - IndexedDB schema
+  - TTL expiration
+  - Per-course cache clear
+  - Recently viewed page cache
+  - Cache size metadata
+
+  Relevant PRD areas:
+
+  - Privacy tiers: canvas-lms-extension-prd.md:536
+  - Storage tables: canvas-lms-extension-prd.md:658
+  - Privacy cache acceptance: canvas-lms-extension-prd.md:904
+
+  Suggested files:
+
+  src/canvas/cache/schema.ts
+  src/canvas/cache/course-cache.ts
+  src/canvas/cache/ttl.ts
+  src/canvas/cache/clear-cache.ts
+  src/canvas/cache/cache-size.ts
+
+  Exit criteria:
+
+  - Stores cleaned chunks only, not raw HTML.
+  - Default TTL is 24 hours for current/recent pages.
+  - User can clear one course or all Canvas cache.
+
+  9. Current Module Scope
+
+  Expand beyond current page, but keep it bounded and visible.
+
+  Owns:
+
+  - Module link discovery
+  - Same-session Canvas fetch
+  - Max item limits
+  - Time limits
+  - Progress UI
+  - Cancellation
+
+  Relevant PRD areas:
+
+  - Same-session fetching: canvas-lms-extension-prd.md:196
+  - Link discovery: canvas-lms-extension-prd.md:214
+  - Current module acceptance: canvas-lms-extension-prd.md:893
+
+  Suggested files:
+
+  src/canvas/collect/link-discovery.ts
+  src/canvas/collect/fetch-canvas-page.ts
+  src/canvas/collect/collect-module.ts
+  src/canvas/collect/limits.ts
+
+  Exit criteria:
+
+  - From modules page, extension discovers visible module item links.
+  - Fetches only allowlisted same-domain Canvas links.
+  - Shows progress and allows cancellation.
+  - Does not recursively crawl the course.
+
+  10. Privacy, Security, And Edge-Case Hardening
+
+  This should be a dedicated pass before adding advanced features.
+
+  Owns:
+
+  - Sensitive content filters
+  - Quiz attempt exclusion
+  - SSO redirect detection
+  - Locked/unpublished content handling
+  - Debug redaction
+  - Production logging rules
+
+  Relevant PRD areas:
+
+  - Sensitive content filters: canvas-lms-extension-prd.md:602
+  - Edge cases: canvas-lms-extension-prd.md:777
+  - Security requirements: canvas-lms-extension-prd.md:818
+
+  Exit criteria:
+
+  - Active quiz attempt pages are not parsed.
+  - Student discussion replies are excluded by default.
+  - SSO/login HTML is detected and not parsed as course content.
+  - No raw Canvas content is logged in production.
+
+  11. File Context
+
+  Add files after HTML page/module context is stable.
+
+  Owns:
+
+  - Canvas file route detection
+  - PDF text extraction
+  - File size/page/time limits
+  - Low-text scanned PDF detection
+
+  Relevant PRD areas:
+
+  - File parser: canvas-lms-extension-prd.md:414
+  - Large file limits: canvas-lms-extension-prd.md:789
+
+  Exit criteria:
+
+  - PDF text extraction works under configured limits.
+  - Scanned PDFs produce a clear “not enough readable text” state.
+  - File text becomes normal CanvasContextDoc/CanvasChunk data.
+
+  12. Optional Advanced Retrieval
+
+  Keep this out of MVP until keyword retrieval feels insufficient.
+
+  Owns:
+
+  - Local embeddings
+  - Hybrid scoring
+  - Vector index
+  - Explicit opt-in course cache
+
+  Relevant PRD areas:
+
+  - Optional vector index: canvas-lms-extension-prd.md:575
+  - Phase 5 optional embeddings: canvas-lms-extension-prd.md:955
+
+  Exit criteria:
+
+  - Embeddings are local-only unless explicitly configured otherwise.
+  - User can clear vector data per course.
+  - Keyword retrieval remains available as fallback.
+
+  Best MVP Build Order
+
+  I would implement in this exact order:
+
+  1. Extension shell and Canvas route detection.
+  2. Current page collector.
+  3. Base, assignment, page, syllabus, and module parsers.
+  4. Chunking and keyword retrieval.
+  5. Prompt builder with citations.
+  6. canvasChatMode current-page-only.
+  7. Source chips and provider disclosure UI.
+  8. Short-lived cache with TTL and clear controls.
+  9. Current module collection.
+  10. Privacy/security hardening.
+  11. PDF/file parsing.
+  12. Optional embeddings.
+
+  The key engineering discipline is to get “current assignment question with citation” working before broadening scope. That path exercises detection,
+  collection, parsing, retrieval, prompt construction, model streaming, citations, and privacy rules without introducing crawler complexity too early.

@@ -60,10 +60,15 @@ function extractCanvasItems() {
 
 function extractPageData() {
   const visibleText = document.body?.innerText || "";
+  const routeInfo =
+    window.CanvasDetection?.parseCanvasRoute(window.location.href, [window.location.hostname]) ||
+    null;
 
   return {
     url: window.location.href,
     title: document.title,
+    routeInfo,
+    isCanvasDom: Boolean(window.CanvasDetection?.detectCanvasDom(document)),
     headings: extractHeadings(),
     links: extractLinks(),
     canvas: extractCanvasItems(),
@@ -71,10 +76,31 @@ function extractPageData() {
   };
 }
 
+function getCanvasPageVerification() {
+  const routeInfo =
+    window.CanvasDetection?.parseCanvasRoute(window.location.href, [window.location.hostname]) ||
+    null;
+
+  return {
+    routeInfo,
+    isCanvasDom: Boolean(window.CanvasDetection?.detectCanvasDom(document))
+  };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "EXTRACT_PAGE_DATA") {
     try {
       sendResponse({ success: true, data: extractPageData() });
+    } catch (error) {
+      sendResponse({ success: false, error: error.message });
+    }
+
+    return true;
+  }
+
+  if (message.type === "CHECK_CANVAS_PAGE") {
+    try {
+      sendResponse({ success: true, data: getCanvasPageVerification() });
     } catch (error) {
       sendResponse({ success: false, error: error.message });
     }
