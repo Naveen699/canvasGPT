@@ -58,25 +58,7 @@ function extractCanvasItems() {
   };
 }
 
-function extractPageData() {
-  const visibleText = document.body?.innerText || "";
-  const routeInfo =
-    window.CanvasDetection?.parseCanvasRoute(window.location.href, [window.location.hostname]) ||
-    null;
-
-  return {
-    url: window.location.href,
-    title: document.title,
-    routeInfo,
-    isCanvasDom: Boolean(window.CanvasDetection?.detectCanvasDom(document)),
-    headings: extractHeadings(),
-    links: extractLinks(),
-    canvas: extractCanvasItems(),
-    visibleText: visibleText.slice(0, MAX_VISIBLE_TEXT_LENGTH)
-  };
-}
-
-function getCanvasPageVerification() {
+function getCanvasPageDetection() {
   const routeInfo =
     window.CanvasDetection?.parseCanvasRoute(window.location.href, [window.location.hostname]) ||
     null;
@@ -85,6 +67,25 @@ function getCanvasPageVerification() {
     routeInfo,
     isCanvasDom: Boolean(window.CanvasDetection?.detectCanvasDom(document))
   };
+}
+
+function extractPageData() {
+  const visibleText = document.body?.innerText || "";
+  const detection = getCanvasPageDetection();
+
+  return {
+    url: window.location.href,
+    title: document.title,
+    ...detection,
+    headings: extractHeadings(),
+    links: extractLinks(),
+    canvas: extractCanvasItems(),
+    visibleText: visibleText.slice(0, MAX_VISIBLE_TEXT_LENGTH)
+  };
+}
+
+function getCanvasPageVerification() {
+  return getCanvasPageDetection();
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

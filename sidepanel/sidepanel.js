@@ -1,15 +1,21 @@
 const status = document.getElementById("status");
 const pageContext = document.getElementById("pageContext");
+const collectPageBtn = document.getElementById("collectPageBtn");
 const loadMaterialsBtn = document.getElementById("loadMaterialsBtn");
 const summary = document.getElementById("summary");
 const materialsList = document.getElementById("materialsList");
 const domainForm = document.getElementById("domainForm");
 const domainInput = document.getElementById("domainInput");
 const domainList = document.getElementById("domainList");
+const collectedPage = document.getElementById("collectedPage");
+const collectedPageTitle = document.getElementById("collectedPageTitle");
+const collectedPageMeta = document.getElementById("collectedPageMeta");
+const collectedPageText = document.getElementById("collectedPageText");
 
 let activeTabIsCanvas = false;
 
 function setBusy(isBusy) {
+  collectPageBtn.disabled = isBusy || !activeTabIsCanvas;
   loadMaterialsBtn.disabled = isBusy || !activeTabIsCanvas;
 }
 
@@ -127,6 +133,24 @@ function renderSummary(data) {
   }
 }
 
+function renderCollectedPage(data) {
+  const page = data.page || data;
+  const textLength = page.text?.length || 0;
+  const rawHtmlNote = page.rawHtmlLifecycle === "transient"
+    ? `Raw HTML parsed transiently and discarded (${page.rawHtmlBytes || 0} bytes).`
+    : "Raw HTML lifecycle unknown.";
+
+  collectedPage.hidden = false;
+  collectedPageTitle.textContent = page.title || "Untitled Canvas page";
+  collectedPageMeta.textContent = [
+    page.contentType || "unknown content type",
+    page.url || "",
+    `${textLength} text characters`,
+    rawHtmlNote
+  ].filter(Boolean).join(" - ");
+  collectedPageText.textContent = page.text || "No visible text was found on this page.";
+}
+
 function renderMaterialItem(material) {
   const item = document.createElement("li");
   item.className = "material-item";
@@ -211,6 +235,27 @@ loadMaterialsBtn.addEventListener("click", async () => {
     clearElement(materialsList);
     materialsList.append(createTextElement("p", "error-text", error.message));
     setStatus("Could not load visible course materials.");
+  } finally {
+    setBusy(false);
+  }
+});
+
+collectPageBtn.addEventListener("click", async () => {
+  setBusy(true);
+  setStatus(
+    CanvasCollectionStatus.createStatus(CanvasCollectionStatus.STATES.collecting).message
+  );
+
+  try {
+    const data = await sendRuntimeMessage({
+      type: CanvasCollectTypes.ACTIVE_PAGE_CONTEXT_MESSAGE
+    });
+
+    renderCollectedPage(data);
+    setStatus(data.status?.message || "Current Canvas page collected.");
+  } catch (error) {
+    collectedPage.hidden = true;
+    setStatus(error.message || "Could not collect the current Canvas page.");
   } finally {
     setBusy(false);
   }

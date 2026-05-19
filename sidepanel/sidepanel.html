@@ -14,6 +14,7 @@
       </header>
 
       <section class="actions" aria-label="Course material actions">
+        <button id="collectPageBtn" type="button">Collect Current Page</button>
         <button id="loadMaterialsBtn" type="button">Load Visible Course Materials</button>
       </section>
 
@@ -45,6 +46,13 @@
 
       <section class="summary-card" id="summary" hidden></section>
 
+      <section class="status-card" id="collectedPage" aria-label="Collected current page" hidden>
+        <h2>Collected Page</h2>
+        <p id="collectedPageTitle"></p>
+        <p id="collectedPageMeta" class="page-meta"></p>
+        <p id="collectedPageText" class="page-preview"></p>
+      </section>
+
       <section class="materials-section">
         <h2>Materials</h2>
         <div id="materialsList" class="materials-list">
@@ -55,6 +63,8 @@
 
     <script src="../canvas/detect.js"></script>
     <script src="../settings/canvas-domains.js"></script>
+    <script src="../canvas/collect/types.js"></script>
+    <script src="../canvas/collect/status.js"></script>
     <script src="sidepanel.js"></script>
   </body>
 </html>

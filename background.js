@@ -1,7 +1,13 @@
 const BACKEND_EXTRACT_URL = "http://localhost:8000/extract";
 const CONTENT_SCRIPT_FILES = ["canvas/detect.js", "content/canvasApiClient.js", "content/content.js"];
 
-importScripts("canvas/detect.js", "settings/canvas-domains.js");
+importScripts(
+  "canvas/detect.js",
+  "settings/canvas-domains.js",
+  "canvas/collect/types.js",
+  "canvas/collect/status.js",
+  "canvas/collect/active-page.js"
+);
 
 const CANVAS_CONTEXT_MENU_ID = "ask-canvas-page";
 
@@ -152,24 +158,19 @@ async function sendMessageToTabWithInjectionFallback(tab, message) {
   }
 }
 
-async function extractActivePageData() {
-  const tab = await getActiveTab();
-  const configuredDomains = await CanvasDomainSettings.getConfiguredCanvasDomains();
-  const routeInfo = CanvasDetection.parseCanvasRoute(tab.url || "", configuredDomains);
+async function collectActivePageContext() {
+  const context = await assertActiveTabIsCanvas();
+  await assertTabHasCanvasDom(context);
 
-  if (!routeInfo) {
-    throw new Error("Open a configured Canvas page before extracting page data.");
-  }
+  const page = await CanvasActivePageCollector.collectCurrentActivePageContext(
+    context.tabId,
+    context.routeInfo
+  );
 
-  const response = await sendMessageToTabWithInjectionFallback(tab, {
-    type: "EXTRACT_PAGE_DATA"
-  });
-
-  if (!response?.success) {
-    throw new Error(response?.error || "Failed to extract page data.");
-  }
-
-  return response.data;
+  return {
+    status: CanvasCollectionStatus.createStatus(CanvasCollectionStatus.STATES.ready),
+    page
+  };
 }
 
 async function sendExtractedDataToBackend(pageData) {
@@ -240,8 +241,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === "EXTRACT_ACTIVE_PAGE_DATA") {
-    extractActivePageData()
+  if (
+    message.type === CanvasCollectTypes.ACTIVE_PAGE_CONTEXT_MESSAGE ||
+    message.type === "EXTRACT_ACTIVE_PAGE_DATA"
+  ) {
+    collectActivePageContext()
       .then((data) => sendResponse({ success: true, data }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
 

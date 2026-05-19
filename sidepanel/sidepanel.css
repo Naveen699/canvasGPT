@@ -112,6 +112,19 @@ input {
   overflow-wrap: anywhere;
 }
 
+.page-meta,
+.page-preview {
+  margin-top: 8px !important;
+}
+
+.page-preview {
+  display: -webkit-box;
+  max-height: 90px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+}
+
 .materials-section {
   display: grid;
   gap: 8px;
