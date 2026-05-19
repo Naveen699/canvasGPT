@@ -368,3 +368,8 @@
 
   The key engineering discipline is to get “current assignment question with citation” working before broadening scope. That path exercises detection,
   collection, parsing, retrieval, prompt construction, model streaming, citations, and privacy rules without introducing crawler complexity too early.
+
+
+
+
+      

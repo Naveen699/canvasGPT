@@ -1,29 +1,65 @@
-const status = document.getElementById("status");
-const pageContext = document.getElementById("pageContext");
-const collectPageBtn = document.getElementById("collectPageBtn");
-const loadMaterialsBtn = document.getElementById("loadMaterialsBtn");
-const summary = document.getElementById("summary");
-const materialsList = document.getElementById("materialsList");
-const domainForm = document.getElementById("domainForm");
-const domainInput = document.getElementById("domainInput");
-const domainList = document.getElementById("domainList");
-const collectedPage = document.getElementById("collectedPage");
-const collectedPageTitle = document.getElementById("collectedPageTitle");
-const collectedPageMeta = document.getElementById("collectedPageMeta");
-const collectedPageText = document.getElementById("collectedPageText");
+import "../canvas/detect.js";
+import "../settings/canvas-domains.js";
+import { createCollectionStatus, CANVAS_COLLECTION_STATES } from "../canvas/collect/status";
+import { ACTIVE_PAGE_CONTEXT_MESSAGE } from "../canvas/collect/types";
+
+type ExtensionMessage = {
+  type: string;
+  domain?: string;
+};
+
+type RouteInfo = {
+  courseId?: string;
+  route: string;
+};
+
+type Material = Record<string, any>;
+type CourseMaterials = Record<string, any>;
+type CollectedPageResponse = {
+  status?: { message?: string };
+  page?: Record<string, any>;
+};
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function getElement<T extends HTMLElement>(id: string): T {
+  const element = document.getElementById(id);
+
+  if (!element) {
+    throw new Error(`Missing required side panel element: ${id}`);
+  }
+
+  return element as T;
+}
+
+const status = getElement<HTMLParagraphElement>("status");
+const pageContext = getElement<HTMLParagraphElement>("pageContext");
+const collectPageBtn = getElement<HTMLButtonElement>("collectPageBtn");
+const loadMaterialsBtn = getElement<HTMLButtonElement>("loadMaterialsBtn");
+const summary = getElement<HTMLElement>("summary");
+const materialsList = getElement<HTMLDivElement>("materialsList");
+const domainForm = getElement<HTMLFormElement>("domainForm");
+const domainInput = getElement<HTMLInputElement>("domainInput");
+const domainList = getElement<HTMLParagraphElement>("domainList");
+const collectedPage = getElement<HTMLElement>("collectedPage");
+const collectedPageTitle = getElement<HTMLParagraphElement>("collectedPageTitle");
+const collectedPageMeta = getElement<HTMLParagraphElement>("collectedPageMeta");
+const collectedPageText = getElement<HTMLParagraphElement>("collectedPageText");
 
 let activeTabIsCanvas = false;
 
-function setBusy(isBusy) {
+function setBusy(isBusy: boolean) {
   collectPageBtn.disabled = isBusy || !activeTabIsCanvas;
   loadMaterialsBtn.disabled = isBusy || !activeTabIsCanvas;
 }
 
-function setStatus(message) {
+function setStatus(message: string) {
   status.textContent = message;
 }
 
-function sendRuntimeMessage(message) {
+function sendRuntimeMessage<T = any>(message: ExtensionMessage): Promise<T> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response) => {
       if (chrome.runtime.lastError) {
@@ -41,7 +77,7 @@ function sendRuntimeMessage(message) {
   });
 }
 
-function formatRouteLabel(routeInfo) {
+function formatRouteLabel(routeInfo: RouteInfo | null | undefined) {
   if (!routeInfo) {
     return "Not a configured Canvas page.";
   }
@@ -50,7 +86,7 @@ function formatRouteLabel(routeInfo) {
   return `${courseLabel} - ${routeInfo.route.replaceAll("_", " ")}`;
 }
 
-function renderDomainList(domains = [], defaultDomains = CanvasDetection.getDefaultCanvasDomainPatterns()) {
+function renderDomainList(domains: string[] = [], defaultDomains: string[] = CanvasDetection.getDefaultCanvasDomainPatterns()) {
   const configuredText = domains.length ? domains.join(", ") : "none";
   domainList.textContent = `Configured: ${configuredText}. Defaults: ${defaultDomains.join(", ")}.`;
 }
@@ -73,27 +109,27 @@ async function refreshCanvasContext() {
     );
   } catch (error) {
     activeTabIsCanvas = false;
-    pageContext.textContent = error.message;
+    pageContext.textContent = getErrorMessage(error);
     setStatus("Could not inspect the active tab.");
   }
 
   setBusy(false);
 }
 
-function clearElement(element) {
+function clearElement(element: HTMLElement) {
   while (element.firstChild) {
     element.removeChild(element.firstChild);
   }
 }
 
-function createTextElement(tagName, className, text) {
+function createTextElement(tagName: string, className: string, text: string) {
   const element = document.createElement(tagName);
   element.className = className;
   element.textContent = text;
   return element;
 }
 
-function createLink(className, text, href) {
+function createLink(className: string, text: string, href: string) {
   const link = document.createElement("a");
   link.className = className;
   link.textContent = text;
@@ -103,7 +139,7 @@ function createLink(className, text, href) {
   return link;
 }
 
-function renderSummary(data) {
+function renderSummary(data: CourseMaterials) {
   const materials = data.materials || {};
   const counts = {
     modules: materials.modules?.length || 0,
@@ -133,7 +169,7 @@ function renderSummary(data) {
   }
 }
 
-function renderCollectedPage(data) {
+function renderCollectedPage(data: CollectedPageResponse | Record<string, any>) {
   const page = data.page || data;
   const textLength = page.text?.length || 0;
   const rawHtmlNote = page.rawHtmlLifecycle === "transient"
@@ -146,12 +182,14 @@ function renderCollectedPage(data) {
     page.contentType || "unknown content type",
     page.url || "",
     `${textLength} text characters`,
+    `${page.docs?.length || 0} parsed docs`,
+    `${page.chunks?.length || 0} retrieval chunks`,
     rawHtmlNote
   ].filter(Boolean).join(" - ");
   collectedPageText.textContent = page.text || "No visible text was found on this page.";
 }
 
-function renderMaterialItem(material) {
+function renderMaterialItem(material: Material) {
   const item = document.createElement("li");
   item.className = "material-item";
   const title = material.title || material.text || material.name || "Untitled";
@@ -178,7 +216,7 @@ function renderMaterialItem(material) {
   return item;
 }
 
-function renderSection(title, items) {
+function renderSection(title: string, items: Material[]) {
   const card = document.createElement("article");
   card.className = "material-card";
   card.append(createTextElement("h3", "section-title", `${title} (${items.length})`));
@@ -196,7 +234,7 @@ function renderSection(title, items) {
   return card;
 }
 
-function normalizeFiles(files = []) {
+function normalizeFiles(files: Material[] = []) {
   return files.map((file) => ({
     type: "file",
     title: file.display_name || file.filename || `File ${file.id}`,
@@ -206,7 +244,7 @@ function normalizeFiles(files = []) {
   }));
 }
 
-function renderMaterials(data) {
+function renderMaterials(data: CourseMaterials) {
   const materials = data.materials || {};
   clearElement(materialsList);
   materialsList.append(renderSection("Module Items", materials.modules || []));
@@ -233,7 +271,7 @@ loadMaterialsBtn.addEventListener("click", async () => {
   } catch (error) {
     summary.hidden = true;
     clearElement(materialsList);
-    materialsList.append(createTextElement("p", "error-text", error.message));
+    materialsList.append(createTextElement("p", "error-text", getErrorMessage(error)));
     setStatus("Could not load visible course materials.");
   } finally {
     setBusy(false);
@@ -243,19 +281,19 @@ loadMaterialsBtn.addEventListener("click", async () => {
 collectPageBtn.addEventListener("click", async () => {
   setBusy(true);
   setStatus(
-    CanvasCollectionStatus.createStatus(CanvasCollectionStatus.STATES.collecting).message
+    createCollectionStatus(CANVAS_COLLECTION_STATES.collecting).message
   );
 
   try {
     const data = await sendRuntimeMessage({
-      type: CanvasCollectTypes.ACTIVE_PAGE_CONTEXT_MESSAGE
+      type: ACTIVE_PAGE_CONTEXT_MESSAGE
     });
 
     renderCollectedPage(data);
     setStatus(data.status?.message || "Current Canvas page collected.");
   } catch (error) {
     collectedPage.hidden = true;
-    setStatus(error.message || "Could not collect the current Canvas page.");
+    setStatus(getErrorMessage(error) || "Could not collect the current Canvas page.");
   } finally {
     setBusy(false);
   }
@@ -281,7 +319,7 @@ domainForm.addEventListener("submit", async (event) => {
     renderDomainList(domains);
     await refreshCanvasContext();
   } catch (error) {
-    setStatus(error.message);
+    setStatus(getErrorMessage(error));
   }
 });
 

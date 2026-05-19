@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CanvasGPT Architecture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f8fb;
+        --panel: #ffffff;
+        --ink: #172033;
+        --muted: #647089;
+        --line: #d8e0ec;
+        --blue: #2563eb;
+        --green: #15803d;
+        --amber: #b45309;
+        --red: #b91c1c;
+        --violet: #6d28d9;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        color: var(--ink);
+        background: var(--bg);
+      }
+
+      main {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 28px;
+      }
+
+      header {
+        margin-bottom: 24px;
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 34px;
+        line-height: 1.15;
+      }
+
+      h2 {
+        margin-bottom: 14px;
+        font-size: 22px;
+      }
+
+      h3 {
+        font-size: 15px;
+      }
+
+      p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      code {
+        padding: 2px 5px;
+        border-radius: 5px;
+        background: #eef2f7;
+        color: #1f2937;
+        font-size: 0.92em;
+      }
+
+      .eyebrow {
+        margin: 0 0 8px;
+        color: var(--blue);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .grid {
+        display: grid;
+        gap: 16px;
+      }
+
+      .cols-2 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .cols-3 {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .panel {
+        margin-bottom: 18px;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .card {
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+      }
+
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        margin-bottom: 8px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        color: #fff;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .tag.chrome {
+        background: var(--blue);
+      }
+
+      .tag.canvas {
+        background: var(--green);
+      }
+
+      .tag.ts {
+        background: var(--violet);
+      }
+
+      .tag.test {
+        background: var(--amber);
+      }
+
+      .tag.gap {
+        background: var(--red);
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 10px;
+        align-items: stretch;
+      }
+
+      .step {
+        position: relative;
+        min-height: 126px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+      }
+
+      .step:not(:last-child)::after {
+        content: "→";
+        position: absolute;
+        top: 44px;
+        right: -15px;
+        z-index: 2;
+        color: var(--blue);
+        font-weight: 700;
+      }
+
+      .module-list {
+        display: grid;
+        gap: 8px;
+        margin: 12px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .module-list li {
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--muted);
+        background: #fafcff;
+        font-size: 13px;
+      }
+
+      .split {
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr;
+        gap: 16px;
+      }
+
+      .file-tree {
+        margin: 0;
+        padding: 14px;
+        overflow: auto;
+        border-radius: 8px;
+        background: #111827;
+        color: #d1d5db;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .status-row {
+        display: grid;
+        grid-template-columns: 160px 1fr;
+        gap: 10px;
+        padding: 10px 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .status-row:first-child {
+        border-top: 0;
+      }
+
+      .status {
+        font-weight: 700;
+      }
+
+      .done {
+        color: var(--green);
+      }
+
+      .partial {
+        color: var(--amber);
+      }
+
+      .missing {
+        color: var(--red);
+      }
+
+      @media (max-width: 900px) {
+        main {
+          padding: 18px;
+        }
+
+        .cols-2,
+        .cols-3,
+        .split,
+        .flow {
+          grid-template-columns: 1fr;
+        }
+
+        .step:not(:last-child)::after {
+          content: "↓";
+          top: auto;
+          right: 50%;
+          bottom: -18px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">CanvasGPT Architecture</p>
+        <h1>Canvas LMS AI Assistant: Modules, Technologies, And Current State</h1>
+        <p>
+          This document visualizes how the Chrome extension is currently organized, what each module does,
+          and how the project is moving toward a Canvas-grounded AI side panel.
+        </p>
+      </header>
+
+      <section class="panel">
+        <h2>Product Flow</h2>
+        <div class="flow">
+          <article class="step">
+            <span class="tag chrome">Chrome</span>
+            <h3>Side Panel</h3>
+            <p>User opens the extension on a Canvas page and asks for context or course material.</p>
+          </article>
+          <article class="step">
+            <span class="tag canvas">Canvas</span>
+            <h3>Detect Page</h3>
+            <p>The extension checks domain, route, course ID, and Canvas DOM markers.</p>
+          </article>
+          <article class="step">
+            <span class="tag chrome">Runtime</span>
+            <h3>Collect Context</h3>
+            <p>Current page HTML/text or visible course materials are collected through the browser session.</p>
+          </article>
+          <article class="step">
+            <span class="tag ts">TypeScript</span>
+            <h3>Parse + Retrieve</h3>
+            <p>Canvas content becomes structured docs, then locally ranked snippets.</p>
+          </article>
+          <article class="step">
+            <span class="tag gap">Next</span>
+            <h3>Prompt + Chat</h3>
+            <p>Retrieved snippets will feed the AI prompt with source citations.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel split">
+        <div>
+          <h2>Repository Map</h2>
+          <p>The extension runtime is currently plain JavaScript. Parser and retrieval layers are TypeScript and tested, but not yet bundled into the browser runtime.</p>
+        </div>
+        <pre class="file-tree"><code>canvasGPT/
+├── manifest.json
+├── background.js
+├── content/
+│   ├── content.js
+│   └── canvasApiClient.js
+├── sidepanel/
+│   ├── sidepanel.html
+│   ├── sidepanel.css
+│   └── sidepanel.js
+├── canvas/
+│   ├── detect.js
+│   ├── collect/
+│   ├── parse/
+│   └── retrieval/
+├── settings/
+├── tests/
+└── backend/</code></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Runtime Extension Modules</h2>
+        <div class="grid cols-3">
+          <article class="card">
+            <span class="tag chrome">manifest.json</span>
+            <h3>Extension Definition</h3>
+            <p>Declares Chrome Manifest V3 permissions, side panel, content scripts, background service worker, host permissions, and extension metadata.</p>
+          </article>
+          <article class="card">
+            <span class="tag chrome">background.js</span>
+            <h3>Coordinator</h3>
+            <p>Handles active tab lookup, side panel behavior, Canvas validation, content-script messages, current-page collection, and course material requests.</p>
+          </article>
+          <article class="card">
+            <span class="tag chrome">sidepanel/</span>
+            <h3>User Interface</h3>
+            <p>Displays Canvas status, domain settings, current page collection, and visible course material summaries.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Canvas-Specific Runtime Modules</h2>
+        <div class="grid cols-2">
+          <article class="card">
+            <span class="tag canvas">canvas/detect.js</span>
+            <h3>Canvas Detection</h3>
+            <ul class="module-list">
+              <li>Checks allowed Canvas hostnames.</li>
+              <li>Parses route types: assignment, modules, page, syllabus, discussion, announcement, file, quiz, unknown.</li>
+              <li>Provides DOM fallback detection for custom domains.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="tag canvas">settings/canvas-domains.js</span>
+            <h3>Domain Settings</h3>
+            <ul class="module-list">
+              <li>Stores configured Canvas domains in Chrome storage.</li>
+              <li>Validates school-specific hostnames.</li>
+              <li>Supports defaults like <code>*.instructure.com</code>.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="tag canvas">canvas/collect/</span>
+            <h3>Current Page Collection</h3>
+            <ul class="module-list">
+              <li>Uses <code>chrome.scripting.executeScript</code> to capture active page context.</li>
+              <li>Returns URL, title, content type, visible text, and transient raw HTML metadata.</li>
+              <li>Clears raw HTML after parsing the current page context.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="tag canvas">content/</span>
+            <h3>Canvas Page Scripts</h3>
+            <ul class="module-list">
+              <li><code>content.js</code> extracts DOM-visible page data and verifies Canvas pages.</li>
+              <li><code>canvasApiClient.js</code> reads visible course materials through the logged-in same-origin Canvas session.</li>
+              <li>No Canvas developer key is used.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Parser Layer</h2>
+        <p>
+          The parser layer is TypeScript under <code>canvas/parse/</code>. It converts Canvas HTML into normalized
+          <code>CanvasContextDoc</code> objects.
+        </p>
+        <div class="grid cols-3">
+          <article class="card">
+            <span class="tag ts">base.ts</span>
+            <h3>Shared Contract</h3>
+            <p>Defines <code>CanvasContextDoc</code>, metadata types, route types, text normalization, URL helpers, source hashing, and fallback parsing.</p>
+          </article>
+          <article class="card">
+            <span class="tag ts">assignment.ts</span>
+            <h3>Assignment Parser</h3>
+            <p>Extracts title, instructions, due dates, availability, points, submission type, linked files, module breadcrumb, and visible rubric text.</p>
+          </article>
+          <article class="card">
+            <span class="tag ts">module.ts</span>
+            <h3>Module Parser</h3>
+            <p>Extracts module titles and visible module item links without fetching linked pages.</p>
+          </article>
+          <article class="card">
+            <span class="tag ts">page.ts</span>
+            <h3>Wiki Page Parser</h3>
+            <p>Extracts page body, linked files, and iframe metadata.</p>
+          </article>
+          <article class="card">
+            <span class="tag ts">syllabus.ts</span>
+            <h3>Syllabus Parser</h3>
+            <p>Extracts syllabus body and visible course summary rows.</p>
+          </article>
+          <article class="card">
+            <span class="tag ts">sanitize.ts</span>
+            <h3>Sanitization</h3>
+            <p>Removes scripts, styles, hidden content, navigation, sidebars, and other non-content elements before parsing.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Retrieval Layer</h2>
+        <p>
+          The retrieval layer is TypeScript under <code>canvas/retrieval/</code>. It selects relevant snippets locally
+          before any AI model receives Canvas context.
+        </p>
+        <div class="grid cols-2">
+          <article class="card">
+            <span class="tag ts">chunk.ts</span>
+            <h3>Chunking</h3>
+            <p>Splits documents into token-bounded chunks, preserves metadata, estimates tokens, keeps overlap, and avoids splitting table-like rows.</p>
+          </article>
+          <article class="card">
+            <span class="tag ts">keyword.ts</span>
+            <h3>Keyword Scoring</h3>
+            <p>Scores exact phrase, title, metadata, and body text matches using local query tokenization.</p>
+          </article>
+          <article class="card">
+            <span class="tag ts">intent.ts</span>
+            <h3>Intent Boosting</h3>
+            <p>Detects due-date, submission, reading, and policy queries. Boosts assignment, rubric, syllabus, module, page, and file chunks accordingly.</p>
+          </article>
+          <article class="card">
+            <span class="tag ts">hybrid.ts</span>
+            <h3>Bounded Retrieval</h3>
+            <p>Combines keyword score, intent boost, current page/module boost, and recency boost. Returns max 8 chunks, max 6 sources, and token totals.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Current Status</h2>
+        <div class="status-row">
+          <div class="status done">Implemented</div>
+          <p>Chrome extension shell, side panel, Canvas detection, domain setup, current page collection, course material loading.</p>
+        </div>
+        <div class="status-row">
+          <div class="status done">Implemented</div>
+          <p>TypeScript parser layer with redacted Canvas fixtures and unit tests.</p>
+        </div>
+        <div class="status-row">
+          <div class="status done">Implemented</div>
+          <p>TypeScript retrieval layer with chunking, scoring, intent boosts, bounded output, and tests.</p>
+        </div>
+        <div class="status-row">
+          <div class="status partial">Partial</div>
+          <p>The browser runtime can collect current pages, but it does not yet use the TypeScript parser and retrieval modules in production.</p>
+        </div>
+        <div class="status-row">
+          <div class="status missing">Next</div>
+          <p>Add a build/bundling path so the extension can use <code>canvas/parse</code> and <code>canvas/retrieval</code> directly from the side panel/background flow.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Testing And Quality Gates</h2>
+        <div class="grid cols-2">
+          <article class="card">
+            <span class="tag test">Parser Tests</span>
+            <h3><code>tests/canvas/parse/parser.test.ts</code></h3>
+            <p>Validates assignment, module, page, syllabus, and fallback parser behavior against redacted HTML fixtures.</p>
+          </article>
+          <article class="card">
+            <span class="tag test">Retrieval Tests</span>
+            <h3><code>tests/canvas/retrieval/retrieval.test.ts</code></h3>
+            <p>Validates chunk bounds, metadata preservation, table row handling, submit/rubric boosts, source limits, and token totals.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Recommended Next Engineering Step</h2>
+        <p>
+          Introduce a build step, likely with Vite or another lightweight bundler, so the TypeScript parser and retrieval
+          layers can be imported by the Chrome extension runtime. After that, the current page flow can become:
+        </p>
+        <div class="flow">
+          <article class="step">
+            <h3>Collect Page</h3>
+            <p>Read active Canvas page through browser APIs.</p>
+          </article>
+          <article class="step">
+            <h3>Parse</h3>
+            <p>Create <code>CanvasContextDoc</code> documents.</p>
+          </article>
+          <article class="step">
+            <h3>Chunk</h3>
+            <p>Create bounded local snippets.</p>
+          </article>
+          <article class="step">
+            <h3>Retrieve</h3>
+            <p>Select relevant snippets for the student question.</p>
+          </article>
+          <article class="step">
+            <h3>Prompt</h3>
+            <p>Send only retrieved snippets to the selected model with citations.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

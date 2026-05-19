@@ -1,13 +1,12 @@
+import "./canvas/detect.js";
+import "./settings/canvas-domains.js";
+import { collectCurrentActivePageContext } from "./canvas/collect/active-page";
+import { createCollectionStatus, CANVAS_COLLECTION_STATES } from "./canvas/collect/status";
+import { ACTIVE_PAGE_CONTEXT_MESSAGE } from "./canvas/collect/types";
+import type { CanvasRoute } from "./canvas/parse";
+
 const BACKEND_EXTRACT_URL = "http://localhost:8000/extract";
 const CONTENT_SCRIPT_FILES = ["canvas/detect.js", "content/canvasApiClient.js", "content/content.js"];
-
-importScripts(
-  "canvas/detect.js",
-  "settings/canvas-domains.js",
-  "canvas/collect/types.js",
-  "canvas/collect/status.js",
-  "canvas/collect/active-page.js"
-);
 
 const CANVAS_CONTEXT_MENU_ID = "ask-canvas-page";
 
@@ -15,7 +14,41 @@ chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error("Failed to configure side panel:", error));
 
-async function getActiveTab() {
+type ExtensionMessage = {
+  type?: string;
+  domain?: string;
+  data?: unknown;
+};
+
+type CanvasRouteInfo = {
+  courseId?: string;
+  route?: CanvasRoute;
+  url?: string;
+  hostname: string;
+};
+
+type ActiveTabCanvasContext = {
+  tabId: number;
+  title: string;
+  url: string;
+  configuredDomains: string[];
+  defaultDomains: string[];
+  isCanvas: boolean;
+  routeInfo: CanvasRouteInfo | null;
+};
+
+type RuntimeResponse<T = unknown> = {
+  success?: boolean;
+  data?: T;
+  error?: string;
+};
+
+type InjectableTab = {
+  id?: number;
+  url?: string;
+};
+
+async function getActiveTab(): Promise<{ id: number; title?: string; url?: string }> {
   const [tab] = await chrome.tabs.query({
     active: true,
     currentWindow: true
@@ -25,10 +58,10 @@ async function getActiveTab() {
     throw new Error("No active tab found.");
   }
 
-  return tab;
+  return tab as { id: number; title?: string; url?: string };
 }
 
-async function getActiveTabCanvasContext() {
+async function getActiveTabCanvasContext(): Promise<ActiveTabCanvasContext> {
   const tab = await getActiveTab();
   const configuredDomains = await CanvasDomainSettings.getConfiguredCanvasDomains();
   const routeInfo = CanvasDetection.parseCanvasRoute(tab.url || "", configuredDomains);
@@ -44,7 +77,7 @@ async function getActiveTabCanvasContext() {
   };
 }
 
-function sendMessageToTab(tabId, message) {
+function sendMessageToTab<T = unknown>(tabId: number, message: ExtensionMessage): Promise<T> {
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
       if (chrome.runtime.lastError) {
@@ -57,19 +90,19 @@ function sendMessageToTab(tabId, message) {
   });
 }
 
-function canInjectIntoTab(tab) {
+function canInjectIntoTab(tab: InjectableTab): tab is { id: number; url: string } {
   return Boolean(tab?.id && /^https?:\/\//.test(tab.url || ""));
 }
 
-function isMissingReceivingEndError(error) {
+function isMissingReceivingEndError(error: Error) {
   return error.message.includes("Receiving end does not exist");
 }
 
-function isDefaultCanvasHost(hostname) {
+function isDefaultCanvasHost(hostname: string) {
   return CanvasDetection.isAllowedCanvasHost(hostname, []);
 }
 
-async function injectContentScript(tab) {
+async function injectContentScript(tab: InjectableTab) {
   if (!canInjectIntoTab(tab)) {
     throw new Error("Open a Canvas page in a normal http or https tab first.");
   }
@@ -80,22 +113,25 @@ async function injectContentScript(tab) {
   });
 }
 
-async function assertActiveTabIsCanvas() {
+async function assertActiveTabIsCanvas(): Promise<ActiveTabCanvasContext & { routeInfo: CanvasRouteInfo }> {
   const context = await getActiveTabCanvasContext();
 
   if (!context.isCanvas || !context.routeInfo?.courseId) {
     throw new Error("Open a Canvas course page before loading course materials.");
   }
 
-  return context;
+  return context as ActiveTabCanvasContext & { routeInfo: CanvasRouteInfo };
 }
 
-async function assertTabHasCanvasDom(context) {
+async function assertTabHasCanvasDom(context: ActiveTabCanvasContext & { routeInfo: CanvasRouteInfo }) {
   if (isDefaultCanvasHost(context.routeInfo.hostname)) {
     return;
   }
 
-  const response = await sendMessageToTabWithInjectionFallback(
+  const response = await sendMessageToTabWithInjectionFallback<{
+    isCanvasDom?: boolean;
+    routeInfo?: CanvasRouteInfo;
+  }>(
     { id: context.tabId, url: context.url },
     { type: "CHECK_CANVAS_PAGE" }
   );
@@ -112,7 +148,7 @@ async function assertTabHasCanvasDom(context) {
   }
 }
 
-function domainPatternToDocumentUrlPattern(domainPattern) {
+function domainPatternToDocumentUrlPattern(domainPattern: string) {
   const normalizedDomain = CanvasDetection.normalizeDomainPattern(domainPattern);
 
   if (!normalizedDomain) {
@@ -145,16 +181,19 @@ async function rebuildCanvasContextMenu() {
   });
 }
 
-async function sendMessageToTabWithInjectionFallback(tab, message) {
+async function sendMessageToTabWithInjectionFallback<T = unknown>(
+  tab: { id: number; url?: string },
+  message: ExtensionMessage
+): Promise<RuntimeResponse<T>> {
   try {
-    return await sendMessageToTab(tab.id, message);
+    return await sendMessageToTab<RuntimeResponse<T>>(tab.id, message);
   } catch (error) {
-    if (!isMissingReceivingEndError(error)) {
+    if (!(error instanceof Error) || !isMissingReceivingEndError(error)) {
       throw error;
     }
 
     await injectContentScript(tab);
-    return sendMessageToTab(tab.id, message);
+    return sendMessageToTab<RuntimeResponse<T>>(tab.id, message);
   }
 }
 
@@ -162,18 +201,18 @@ async function collectActivePageContext() {
   const context = await assertActiveTabIsCanvas();
   await assertTabHasCanvasDom(context);
 
-  const page = await CanvasActivePageCollector.collectCurrentActivePageContext(
+  const page = await collectCurrentActivePageContext(
     context.tabId,
     context.routeInfo
   );
 
   return {
-    status: CanvasCollectionStatus.createStatus(CanvasCollectionStatus.STATES.ready),
+    status: createCollectionStatus(CANVAS_COLLECTION_STATES.ready),
     page
   };
 }
 
-async function sendExtractedDataToBackend(pageData) {
+async function sendExtractedDataToBackend(pageData: unknown) {
   const response = await fetch(BACKEND_EXTRACT_URL, {
     method: "POST",
     headers: {
@@ -221,7 +260,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   });
 });
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendResponse) => {
   if (message.type === "GET_ACTIVE_TAB_CANVAS_CONTEXT") {
     getActiveTabCanvasContext()
       .then((data) => sendResponse({ success: true, data }))
@@ -232,17 +271,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "ADD_CANVAS_DOMAIN") {
     CanvasDomainSettings.addConfiguredCanvasDomain(message.domain || "")
-      .then(async (data) => {
+      .then(async (data: string[]) => {
         await rebuildCanvasContextMenu();
         sendResponse({ success: true, data });
       })
-      .catch((error) => sendResponse({ success: false, error: error.message }));
+      .catch((error: Error) => sendResponse({ success: false, error: error.message }));
 
     return true;
   }
 
   if (
-    message.type === CanvasCollectTypes.ACTIVE_PAGE_CONTEXT_MESSAGE ||
+    message.type === ACTIVE_PAGE_CONTEXT_MESSAGE ||
     message.type === "EXTRACT_ACTIVE_PAGE_DATA"
   ) {
     collectActivePageContext()

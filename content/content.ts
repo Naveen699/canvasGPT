@@ -1,10 +1,15 @@
 const MAX_VISIBLE_TEXT_LENGTH = 10000;
 
-function getTrimmedText(element) {
-  return element?.innerText?.trim() || element?.textContent?.trim() || "";
+type LinkItem = {
+  text: string;
+  href: string;
+};
+
+function getTrimmedText(element: Element | null | undefined): string {
+  return (element as HTMLElement | null | undefined)?.innerText?.trim() || element?.textContent?.trim() || "";
 }
 
-function getUniqueItems(items, keyFn) {
+function getUniqueItems<T>(items: T[], keyFn: (item: T) => string): T[] {
   const seen = new Set();
 
   return items.filter((item) => {
@@ -25,8 +30,8 @@ function extractHeadings() {
     .filter(Boolean);
 }
 
-function extractLinks(selector = "a") {
-  const links = Array.from(document.querySelectorAll(selector))
+function extractLinks(selector = "a"): LinkItem[] {
+  const links = Array.from(document.querySelectorAll<HTMLAnchorElement>(selector))
     .map((link) => ({
       text: getTrimmedText(link),
       href: link.href
@@ -44,7 +49,7 @@ function extractCanvasItems() {
   const dueDates = Array.from(
     document.querySelectorAll("[class*='due'], time, [datetime]")
   )
-    .map((element) => ({
+    .map((element: Element) => ({
       text: getTrimmedText(element),
       dateTime: element.getAttribute("datetime") || ""
     }))
@@ -88,12 +93,12 @@ function getCanvasPageVerification() {
   return getCanvasPageDetection();
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: { type?: string }, sender, sendResponse) => {
   if (message.type === "EXTRACT_PAGE_DATA") {
     try {
       sendResponse({ success: true, data: extractPageData() });
     } catch (error) {
-      sendResponse({ success: false, error: error.message });
+      sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) });
     }
 
     return true;
@@ -103,7 +108,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     try {
       sendResponse({ success: true, data: getCanvasPageVerification() });
     } catch (error) {
-      sendResponse({ success: false, error: error.message });
+      sendResponse({ success: false, error: error instanceof Error ? error.message : String(error) });
     }
 
     return true;
@@ -116,8 +121,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     window.CanvasSessionApi.getCurrentCanvasCourseMaterials()
-      .then((data) => sendResponse({ success: true, data }))
-      .catch((error) => sendResponse({ success: false, error: error.message }));
+      .then((data: unknown) => sendResponse({ success: true, data }))
+      .catch((error: Error) => sendResponse({ success: false, error: error.message }));
 
     return true;
   }
