@@ -78,6 +78,29 @@ describe("Canvas retrieval layer", () => {
     expect(chunks[1].text).not.toContain(chunks[0].text);
   });
 
+  it("accumulates small blocks before flushing non-final chunks when possible", () => {
+    const doc = makeDoc({
+      id: "42:page:min-target",
+      text: [
+        textWithEstimatedTokens(200, "aaa"),
+        textWithEstimatedTokens(500, "bbb"),
+        textWithEstimatedTokens(200, "ccc")
+      ].join("\n\n")
+    });
+
+    const chunks = chunkDocument(doc, {
+      minTokens: 300,
+      maxTokens: 600,
+      overlapTokens: 0
+    });
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks[0].tokenEstimate).toBeGreaterThanOrEqual(300);
+    expect(chunks[0].tokenEstimate).toBeLessThanOrEqual(600);
+    expect(chunks[0].text).toContain("aaa");
+    expect(chunks[0].text).toContain("bbb");
+  });
+
   it("keeps assignment metadata attached to every assignment chunk", () => {
     const doc = makeDoc({
       id: "42:assignment:reflection",

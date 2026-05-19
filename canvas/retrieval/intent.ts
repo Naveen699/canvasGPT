@@ -37,6 +37,11 @@ const INTENT_TYPE_BOOSTS: Record<QueryIntent, Partial<Record<CanvasContextDocTyp
   }
 };
 
+const INTENT_EVIDENCE_PATTERNS: Partial<Record<QueryIntent, RegExp>> = {
+  due: /\b(due|deadline|available|until)\b/,
+  submit: /\b(submit|submission|rubric|requirement|upload|turn in)\b/
+};
+
 export function detectQueryIntent(query: string): QueryIntentMatch {
   const terms = new Set(tokenizeQuery(query));
   const intents = (Object.keys(INTENT_KEYWORDS) as QueryIntent[]).filter((intent) =>
@@ -57,11 +62,11 @@ export function scoreIntentBoost(intent: QueryIntentMatch, chunk: CanvasChunk): 
   let score = intent.boostTypes[chunk.type] || 0;
   const text = `${chunk.title}\n${chunk.text}\n${chunk.metadata.submissionType || ""}`.toLowerCase();
 
-  if (intent.intents.includes("submit") && /\b(submit|submission|rubric|requirement|upload|turn in)\b/.test(text)) {
+  if (intent.intents.includes("submit") && INTENT_EVIDENCE_PATTERNS.submit?.test(text)) {
     score += 8;
   }
 
-  if (intent.intents.includes("due") && /\b(due|deadline|available|until)\b/.test(text)) {
+  if (intent.intents.includes("due") && INTENT_EVIDENCE_PATTERNS.due?.test(text)) {
     score += 6;
   }
 

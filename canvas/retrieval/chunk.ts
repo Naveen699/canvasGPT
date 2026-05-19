@@ -28,6 +28,10 @@ export type CanvasSourceCitation = {
 };
 
 export type ChunkOptions = {
+  /**
+   * Soft lower bound for non-final chunks. When a splittable block can be
+   * divided without exceeding maxTokens, chunking will avoid flushing below it.
+   */
   minTokens?: number;
   maxTokens?: number;
   overlapTokens?: number;
@@ -41,12 +45,24 @@ type TextBlock = {
   text: string;
   tokenEstimate: number;
   headingPath?: string[];
+  canSplit?: boolean;
 };
 
-function resolveChunkOptions(options: ChunkOptions = {}): Required<ChunkOptions> {
+function createTextBlock(text: string, headingPath?: string[], canSplit = false): TextBlock {
   return {
-    minTokens: options.minTokens ?? DEFAULT_MIN_TOKENS,
-    maxTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
+    text,
+    tokenEstimate: estimateTokens(text),
+    headingPath: headingPath?.length ? [...headingPath] : undefined,
+    canSplit
+  };
+}
+
+function resolveChunkOptions(options: ChunkOptions = {}): Required<ChunkOptions> {
+  const maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
+
+  return {
+    minTokens: Math.min(options.minTokens ?? DEFAULT_MIN_TOKENS, maxTokens),
+    maxTokens,
     overlapTokens: options.overlapTokens ?? DEFAULT_OVERLAP_TOKENS
   };
 }
@@ -144,11 +160,7 @@ function textToBlocks(text: string, maxTokens: number): TextBlock[] {
     }
 
     splitLargeText(paragraphText, maxTokens).forEach((part) => {
-      blocks.push({
-        text: part,
-        tokenEstimate: estimateTokens(part),
-        headingPath: headingPath.length ? [...headingPath] : undefined
-      });
+      blocks.push(createTextBlock(part, headingPath, true));
     });
   };
 
@@ -162,22 +174,14 @@ function textToBlocks(text: string, maxTokens: number): TextBlock[] {
 
     if (isTableLikeLine(line)) {
       flushParagraph();
-      blocks.push({
-        text: line,
-        tokenEstimate: estimateTokens(line),
-        headingPath: headingPath.length ? [...headingPath] : undefined
-      });
+      blocks.push(createTextBlock(line, headingPath));
       continue;
     }
 
     if (isHeadingLikeLine(line)) {
       flushParagraph();
       headingPath.splice(0, headingPath.length, line.replace(/^#{1,6}\s+/, ""));
-      blocks.push({
-        text: line,
-        tokenEstimate: estimateTokens(line),
-        headingPath: [...headingPath]
-      });
+      blocks.push(createTextBlock(line, headingPath));
       continue;
     }
 
@@ -210,6 +214,14 @@ function takeOverlapBlocks(blocks: TextBlock[], overlapTokens: number): TextBloc
   return overlap;
 }
 
+function splitTextBlock(block: TextBlock, maxTokens: number): TextBlock[] {
+  if (!block.canSplit || block.tokenEstimate <= maxTokens) {
+    return [block];
+  }
+
+  return splitLargeText(block.text, maxTokens).map((part) => createTextBlock(part, block.headingPath, true));
+}
+
 function createChunk(doc: CanvasContextDoc, blocks: TextBlock[], chunkIndex: number): CanvasChunk {
   const text = normalizeWhitespace(blocks.map((block) => block.text).join("\n\n"));
   const headingPath = blocks.find((block) => block.headingPath?.length)?.headingPath;
@@ -237,14 +249,17 @@ export function chunkDocument(doc: CanvasContextDoc, options: ChunkOptions = {})
     return [];
   }
 
-  if (estimateTokens(text) <= resolved.maxTokens) {
-    return [createChunk(doc, [{ text, tokenEstimate: estimateTokens(text) }], 0)];
+  const textTokens = estimateTokens(text);
+
+  if (textTokens <= resolved.maxTokens) {
+    return [createChunk(doc, [{ text, tokenEstimate: textTokens }], 0)];
   }
 
   const chunks: CanvasChunk[] = [];
   const blocks = textToBlocks(text, resolved.maxTokens);
   let current: TextBlock[] = [];
   let currentTokens = 0;
+  let blockIndex = 0;
 
   const flushCurrent = () => {
     if (!current.length) {
@@ -256,8 +271,22 @@ export function chunkDocument(doc: CanvasContextDoc, options: ChunkOptions = {})
     currentTokens = current.reduce((sum, block) => sum + block.tokenEstimate, 0);
   };
 
-  for (const block of blocks) {
+  while (blockIndex < blocks.length) {
+    const block = blocks[blockIndex];
     let wouldExceedMax = currentTokens > 0 && currentTokens + block.tokenEstimate > resolved.maxTokens;
+
+    if (wouldExceedMax && currentTokens < resolved.minTokens) {
+      const remainingTokens = resolved.maxTokens - currentTokens;
+      const splitBlocks = splitTextBlock(block, remainingTokens);
+
+      if (splitBlocks.length > 1) {
+        current.push(splitBlocks[0]);
+        currentTokens += splitBlocks[0].tokenEstimate;
+        blocks.splice(blockIndex, 1, ...splitBlocks.slice(1));
+        flushCurrent();
+        continue;
+      }
+    }
 
     if (wouldExceedMax && current.length) {
       flushCurrent();
@@ -272,6 +301,7 @@ export function chunkDocument(doc: CanvasContextDoc, options: ChunkOptions = {})
 
     current.push(block);
     currentTokens += block.tokenEstimate;
+    blockIndex += 1;
   }
 
   if (current.length) {

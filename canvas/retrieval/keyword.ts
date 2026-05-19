@@ -77,14 +77,14 @@ function metadataToText(metadata: CanvasContextMetadata): string {
   );
 }
 
-export function buildSearchableChunkText(chunk: CanvasChunk): string {
+export function buildSearchableChunkText(chunk: CanvasChunk, metadataText = metadataToText(chunk.metadata)): string {
   return normalizeWhitespace(
     [
       chunk.title,
       chunk.type,
       chunk.url,
       chunk.headingPath?.join(" "),
-      metadataToText(chunk.metadata),
+      metadataText,
       chunk.text
     ].filter(Boolean).join("\n")
   );
@@ -94,8 +94,9 @@ export function scoreKeywordMatch(query: string, chunk: CanvasChunk): KeywordSco
   const normalizedQuery = normalizeForSearch(query);
   const queryTerms = tokenizeQuery(query);
   const title = normalizeForSearch(chunk.title);
-  const metadata = normalizeForSearch(metadataToText(chunk.metadata));
-  const searchableText = normalizeForSearch(buildSearchableChunkText(chunk));
+  const metadataText = metadataToText(chunk.metadata);
+  const metadata = normalizeForSearch(metadataText);
+  const searchableText = normalizeForSearch(buildSearchableChunkText(chunk, metadataText));
   let exactPhraseMatches = 0;
   let titleMatches = 0;
   let metadataMatches = 0;
