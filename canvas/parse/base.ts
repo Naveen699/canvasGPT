@@ -88,6 +88,18 @@ const MAIN_CONTENT_SELECTORS = [
   '[role="main"]',
   ".ic-Layout-contentMain"
 ];
+const CANVAS_ROUTE_PATTERNS: Array<[CanvasRoute, RegExp]> = [
+  ["syllabus", /\/assignments\/syllabus(?:\/)?$/],
+  ["assignment", /\/assignments\/\d+/],
+  ["module_item", /\/modules\/items\/\d+/],
+  ["modules", /\/modules(?:\/)?/],
+  ["page", /\/pages\//],
+  ["discussion", /\/discussion_topics\/\d+/],
+  ["announcement", /\/announcements\/\d+/],
+  ["file", /\/files\/\d+/],
+  ["quiz", /\/quizzes\/\d+/],
+  ["course_home", /\/courses\/\d+(?:\/)?$/]
+];
 
 export function normalizeWhitespace(text = ""): string {
   return text
@@ -101,6 +113,12 @@ export function normalizeWhitespace(text = ""): string {
 
 export function getTrimmedText(element: Element | null | undefined): string {
   return normalizeWhitespace(element?.textContent || "");
+}
+
+export function firstMatchingText(root: ParentNode, selectors: string[]): string {
+  return selectors
+    .map((selector) => getTrimmedText(root.querySelector(selector)))
+    .find(Boolean) || "";
 }
 
 export function absolutizeUrl(href: string | null | undefined, baseUrl: string): string {
@@ -141,22 +159,10 @@ export function inferCourseIdFromUrl(url: string): string {
 export function inferRouteFromUrl(url: string): CanvasRoute {
   try {
     const pathname = new URL(url).pathname;
-
-    if (/\/assignments\/syllabus(?:\/)?$/.test(pathname)) return "syllabus";
-    if (/\/assignments\/\d+/.test(pathname)) return "assignment";
-    if (/\/modules\/items\/\d+/.test(pathname)) return "module_item";
-    if (/\/modules(?:\/)?/.test(pathname)) return "modules";
-    if (/\/pages\//.test(pathname)) return "page";
-    if (/\/discussion_topics\/\d+/.test(pathname)) return "discussion";
-    if (/\/announcements\/\d+/.test(pathname)) return "announcement";
-    if (/\/files\/\d+/.test(pathname)) return "file";
-    if (/\/quizzes\/\d+/.test(pathname)) return "quiz";
-    if (/\/courses\/\d+(?:\/)?$/.test(pathname)) return "course_home";
+    return CANVAS_ROUTE_PATTERNS.find(([, pattern]) => pattern.test(pathname))?.[0] || "unknown";
   } catch {
     return "unknown";
   }
-
-  return "unknown";
 }
 
 export function slugify(text: string): string {
@@ -236,6 +242,19 @@ export function selectMainContent(document: Document): Element {
   );
 }
 
+export function extractLinkedFiles(document: Document, baseUrl: string): CanvasLinkMetadata[] {
+  return uniqueBy(
+    Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href*='/files/']"))
+      .map((link) => ({
+        title: getTrimmedText(link) || link.getAttribute("title") || "Linked file",
+        url: absolutizeUrl(link.getAttribute("href"), baseUrl),
+        type: "file"
+      }))
+      .filter((link) => link.url),
+    (link) => `${link.title}:${link.url}`
+  );
+}
+
 export function createDoc(input: {
   id: string;
   courseId: string;
@@ -266,27 +285,21 @@ export function createDoc(input: {
 }
 
 export function parseBaseCanvasPage(input: CanvasParseInput): CanvasContextDoc[] {
-  const route = input.route || inferRouteFromUrl(input.url);
-  const courseId = input.courseId || inferCourseIdFromUrl(input.url);
-  const collectedAt = input.collectedAt || Date.now();
-  const title =
-    getTrimmedText(input.document.querySelector("h1")) ||
-    input.title ||
-    input.document.title ||
-    "Canvas page";
-  const mainContent = selectMainContent(input.document);
-  const text = extractReadableText(mainContent);
+  const base = getBaseParsedPage(input);
 
   return [
     createDoc({
-      id: `${courseId || "canvas"}:${route}:fallback:${hashSource(input.url)}`,
-      courseId,
-      route,
+      id: `${base.courseId || "canvas"}:${base.route}:fallback:${hashSource(input.url)}`,
+      courseId: base.courseId,
+      route: base.route,
       type: "unknown",
-      title,
+      title: base.title,
       url: input.url,
-      text,
-      collectedAt
+      text: base.text,
+      collectedAt: base.collectedAt,
+      metadata: {
+        sourceHash: base.sourceHash
+      }
     })
   ];
 }

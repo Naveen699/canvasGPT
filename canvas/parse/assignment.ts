@@ -1,10 +1,10 @@
 import {
   CanvasContextDoc,
-  CanvasLinkMetadata,
   CanvasParseInput,
-  absolutizeUrl,
   createDoc,
+  extractLinkedFiles,
   extractReadableText,
+  firstMatchingText,
   getBaseParsedPage,
   getTrimmedText,
   hashSource,
@@ -13,12 +13,6 @@ import {
   slugify,
   uniqueBy
 } from "./base";
-
-function firstText(document: Document, selectors: string[]): string {
-  return selectors
-    .map((selector) => getTrimmedText(document.querySelector(selector)))
-    .find(Boolean) || "";
-}
 
 function collectTexts(document: Document, selectors: string[]): string[] {
   return uniqueBy(
@@ -52,7 +46,7 @@ function extractDefinitionText(document: Document, labels: string[]): string {
 function extractPoints(pageText: string, document: Document): string {
   const pointText =
     extractDefinitionText(document, ["Points", "Points Possible"]) ||
-    firstText(document, [
+    firstMatchingText(document, [
       ".points_possible",
       ".assignment-points",
       "[class*='points']",
@@ -94,7 +88,7 @@ function extractInstructions(document: Document): string {
 function extractSubmissionType(pageText: string, document: Document): string {
   const submissionText =
     extractDefinitionText(document, ["Submitting", "Submission Type", "Submission Types", "Online Entry Options"]) ||
-    firstText(document, [
+    firstMatchingText(document, [
       ".submission_types",
       ".assignment-submission-types",
       "[class*='submission-type']",
@@ -104,20 +98,8 @@ function extractSubmissionType(pageText: string, document: Document): string {
   return normalizeWhitespace(submissionText);
 }
 
-function extractLinkedFiles(document: Document, baseUrl: string): CanvasLinkMetadata[] {
-  const links = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href*='/files/']"))
-    .map((link) => ({
-      title: getTrimmedText(link) || link.getAttribute("title") || "Linked file",
-      url: absolutizeUrl(link.getAttribute("href"), baseUrl),
-      type: "file"
-    }))
-    .filter((link) => link.url);
-
-  return uniqueBy(links, (link) => `${link.title}:${link.url}`);
-}
-
 function extractModuleBreadcrumb(document: Document): string {
-  return firstText(document, [
+  return firstMatchingText(document, [
     ".module-sequence-footer-content",
     ".module-sequence-padding",
     ".context_module",
@@ -139,7 +121,7 @@ export function parseAssignment(input: CanvasParseInput): CanvasContextDoc[] {
   const base = getBaseParsedPage(input);
   const pageText = base.text;
   const title =
-    firstText(input.document, [
+    firstMatchingText(input.document, [
       "h1.assignment-title",
       ".assignment-title",
       ".title-content",

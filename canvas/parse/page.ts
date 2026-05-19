@@ -4,6 +4,7 @@ import {
   CanvasParseInput,
   absolutizeUrl,
   createDoc,
+  extractLinkedFiles,
   extractReadableText,
   getBaseParsedPage,
   getTrimmedText,
@@ -12,19 +13,6 @@ import {
   slugify,
   uniqueBy
 } from "./base";
-
-function extractLinkedFiles(document: Document, baseUrl: string): CanvasLinkMetadata[] {
-  return uniqueBy(
-    Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href*='/files/']"))
-      .map((link) => ({
-        title: getTrimmedText(link) || link.getAttribute("title") || "Linked file",
-        url: absolutizeUrl(link.getAttribute("href"), baseUrl),
-        type: "file"
-      }))
-      .filter((link) => link.url),
-    (link) => `${link.title}:${link.url}`
-  );
-}
 
 function extractEmbeddedIframes(document: Document, baseUrl: string): CanvasLinkMetadata[] {
   return uniqueBy(
