@@ -1,5 +1,17 @@
 (function initCanvasDetection(globalScope) {
   const DEFAULT_CANVAS_DOMAIN_PATTERNS = ["*.instructure.com", "canvas.case.edu"];
+  const CANVAS_ROUTE_PATTERNS = [
+    ["syllabus", /\/assignments\/syllabus(?:\/)?$/],
+    ["assignment", /\/assignments\/\d+/],
+    ["module_item", /\/modules\/items\/\d+/],
+    ["modules", /\/modules(?:\/)?/],
+    ["page", /\/pages\//],
+    ["discussion", /\/discussion_topics\/\d+/],
+    ["announcement", /\/announcements\/\d+/],
+    ["file", /\/files\/\d+/],
+    ["quiz", /\/quizzes\/\d+/],
+    ["course_home", /\/courses\/\d+(?:\/)?$/]
+  ];
   const PUBLIC_SUFFIX_WILDCARD_DENYLIST = new Set([
     "com",
     "net",
@@ -151,18 +163,8 @@
 
     const courseId = courseMatch[1];
     const pathname = parsed.pathname;
-    let route = "unknown";
-
-    if (/\/assignments\/syllabus(?:\/)?$/.test(pathname)) route = "syllabus";
-    else if (/\/assignments\/\d+/.test(pathname)) route = "assignment";
-    else if (/\/modules\/items\/\d+/.test(pathname)) route = "module_item";
-    else if (/\/modules(?:\/)?/.test(pathname)) route = "modules";
-    else if (/\/pages\//.test(pathname)) route = "page";
-    else if (/\/discussion_topics\/\d+/.test(pathname)) route = "discussion";
-    else if (/\/announcements\/\d+/.test(pathname)) route = "announcement";
-    else if (/\/files\/\d+/.test(pathname)) route = "file";
-    else if (/\/quizzes\/\d+/.test(pathname)) route = "quiz";
-    else if (/\/courses\/\d+(?:\/)?$/.test(pathname)) route = "course_home";
+    const route =
+      CANVAS_ROUTE_PATTERNS.find(([, pattern]) => pattern.test(pathname))?.[0] || "unknown";
 
     return {
       courseId,
