@@ -74,7 +74,7 @@ button:disabled {
 
 .status-card,
 .summary-card,
-.settings-card,
+.prompt-card,
 .material-card {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -83,46 +83,22 @@ button:disabled {
 }
 
 .status-card p,
-.summary-card p,
-.settings-card p {
+.summary-card p {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
 }
 
-.domain-form {
-  display: grid;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-input {
+textarea {
   width: 100%;
   min-width: 0;
+  resize: vertical;
   padding: 9px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
   background: white;
   font: inherit;
-}
-
-.domain-list {
-  margin-top: 8px !important;
-  overflow-wrap: anywhere;
-}
-
-.page-meta,
-.page-preview {
-  margin-top: 8px !important;
-}
-
-.page-preview {
-  display: -webkit-box;
-  max-height: 90px;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 5;
 }
 
 .materials-section {

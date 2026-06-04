@@ -1,1155 +1,964 @@
-# PRD: Canvas LMS Context Assistant Browser Extension
+# PRD: CanvasGPT OpenAI File Search Course Index
 
 ## 1. Product Summary
 
-Build a Canvas LMS-focused browser extension that helps students ask questions about their course materials without manually searching Canvas or uploading files to an LLM. The extension will gather context directly from Canvas pages and files that the logged-in user can already access in the browser, parse that content locally, retrieve only relevant snippets for each user question, and send those snippets to the selected LLM.
+CanvasGPT is a Chrome extension and local FastAPI backend that helps students ask questions about the currently open Canvas LMS course. The extension uses the student's authenticated Canvas browser session to collect course material metadata and accessible Canvas course content. The backend stores a local catalog in SQLite, uploads changed course materials to an OpenAI-hosted vector store, and answers prompts with the OpenAI Responses API `file_search` tool.
 
-This product is adapted from Page Assist's browser-context architecture, but narrowed to Canvas LMS. Page Assist collects active page, selected tab, document, search, and knowledge-base context, then inserts that context into model prompts. This Canvas extension will replace generic context gathering with Canvas-aware page discovery, parsing, short-lived caching, retrieval, and prompt construction.
+The vector store is hosted by OpenAI. SQLite does not contain embeddings or vector-search data. SQLite stores only the local pointer/catalog data needed to reuse the OpenAI vector store, skip unchanged materials, track indexing status, and map OpenAI file citations back to Canvas source metadata.
 
-The extension must not require a Canvas API developer key. It must operate through the authenticated browser session and extension browser APIs only.
+The intended high-level flow is:
+
+```text
+Student opens Canvas course
+  -> extension collects deduplicated Canvas course manifest
+  -> student asks first question
+  -> extension asks for per-course OpenAI indexing consent
+  -> backend creates/reuses OpenAI vector store
+  -> backend stores vector_store_id in SQLite
+  -> backend uploads/indexes new or changed Canvas materials
+  -> backend answers prompt using Responses API file_search
+  -> side panel renders answer, citations, indexing warnings, and source links
+```
 
 ## 2. Goals
 
-- Let students ask natural-language questions about Canvas course content.
-- Avoid requiring users to manually upload Canvas files or copy-paste assignment/module/page text.
-- Gather Canvas context from browser-visible pages and accessible same-session Canvas links.
-- Minimize sensitive data retention by default.
-- Send only relevant course snippets to the model, not full course dumps.
-- Provide source citations for every course-grounded answer.
-- Make it clear when Canvas context is being collected, cached, or sent to a model.
-- Support local models first-class, while allowing compatible cloud providers with explicit disclosure.
+- Let students ask natural-language questions about Canvas course materials without manually uploading files.
+- Replace manual prompt-context construction and local file parsing with OpenAI File Search over a course-scoped vector store.
+- Keep Canvas access browser-session-only for v1; do not require Canvas OAuth, Canvas developer keys, or server-side Canvas credentials.
+- Cache only local metadata and OpenAI IDs so repeat prompts and repeat sessions avoid re-uploading unchanged materials.
+- Deduplicate large course manifests before syncing so repeated links, files, and module references do not create repeated vector store files.
+- Provide citations that link back to Canvas source titles, source types, URLs, and module placements when known.
+- Make remote OpenAI storage explicit through per-course user consent.
+- Keep the architecture compatible with a future hosted backend and authentication layer.
 
 ## 3. Non-Goals
 
-- No Canvas API developer-key integration for the MVP.
-- No instructor/admin-only course access.
-- No gradebook automation.
-- No assignment submission automation.
-- No quiz answering, cheating workflow, or test-taking automation.
-- No hidden/locked/unpublished content access.
-- No permanent full-course archival by default.
-- No bypassing Canvas, SSO, file, iframe, or LTI permissions.
-- No background crawling of unrelated websites.
+- No external website indexing in v1.
+- No Canvas OAuth or server-side Canvas API credentials in v1.
+- No local vector database in v1.
+- No OCR, audio transcription, video transcription, archive unpacking, or image-only file extraction in v1.
+- No student discussion reply indexing in v1.
+- No automatic indexing before the student asks the first prompt.
+- No answer streaming in v1. The backend returns one complete answer payload.
+- No gradebook, submission automation, quiz automation, or Canvas permission bypassing.
 
-## 4. Core User Stories
+## 4. Locked Product Decisions
 
-### Student: Current Page Help
+- The current PRD replaces the previous local parsing/local retrieval direction.
+- The backend is local FastAPI for v1.
+- The OpenAI API key is provided by the developer/user in the local backend environment as `OPENAI_API_KEY`.
+- The answer model is configured by `OPENAI_RESPONSE_MODEL`.
+- Indexing starts on the first prompt, not immediately after material collection.
+- The first prompt waits through staged indexing and then answers once usable indexed content exists.
+- The student must provide per-course opt-in before Canvas materials are uploaded to OpenAI.
+- v1 indexes Canvas-only sources:
+  - Canvas pages
+  - assignments
+  - announcements
+  - discussion topic prompts and instructor-authored topic text
+  - module metadata
+  - Canvas-hosted files
+- v1 skips:
+  - external websites
+  - student discussion replies
+  - files over 60 MB
+  - file types not supported by OpenAI File Search
+- OpenAI vector stores and uploaded files use a default 7-day inactive retention policy.
+- Clearing a course index performs a full local and remote delete.
 
-As a student viewing a Canvas assignment, I want to ask “what do I need to submit?” and get an answer based on the current assignment instructions, rubric, and visible due-date information.
+## 5. Current Implementation Baseline
 
-### Student: Module Understanding
+The current repository is a JavaScript Chrome extension with a local FastAPI backend:
 
-As a student viewing a Canvas module, I want to ask “what should I focus on for this week?” and get an answer grounded in the visible module items, pages, assignments, files, and discussions.
+- `content/canvasApiClient.js` collects Canvas course data through the active browser session.
+- `sidepanel/sidepanel.js` currently displays collected materials.
+- `background.js` coordinates active-tab Canvas checks and content-script messaging.
+- `backend/main.py` currently exposes a simple `/health` endpoint and `/extract` endpoint.
+- `canvas-lms-extension-prd.md` is the root PRD and is now the source of truth for the File Search architecture.
 
-### Student: Course Search
+The implementation should evolve this baseline rather than relying on the older local-parser PRD architecture.
 
-As a student, I want to ask “where does the professor explain late work?” and have the extension search parsed Canvas course content it has locally collected or can collect from visible course links.
+## 6. Architecture
 
-### Student: Source Verification
+### 6.1 Components
 
-As a student, I want every answer to show the Canvas source title and link so I can verify the answer in Canvas.
+```text
+Chrome side panel
+  - displays current course status
+  - accepts prompts
+  - asks for per-course OpenAI indexing consent
+  - renders answers, citations, warnings, and clear-index controls
 
-### Privacy-Conscious User
+Background service worker
+  - verifies active tab is a Canvas course
+  - coordinates extension/content-script messages
+  - forwards side panel requests to the content script
 
-As a user, I want the extension to avoid storing raw Canvas HTML or full course content permanently, and I want to clear cached course data.
+Canvas content script
+  - uses the user's existing Canvas browser session
+  - collects course manifest and Canvas-native content available through same-origin Canvas APIs
+  - resolves Canvas file metadata and signed public URLs only for Canvas-hosted files selected for sync
 
-### Cloud Model User
+Local FastAPI backend
+  - owns OpenAI API calls
+  - owns SQLite metadata catalog
+  - creates/reuses OpenAI vector stores
+  - uploads files and synthetic Markdown documents to OpenAI
+  - calls Responses API with file_search
+  - maps OpenAI file citations back to Canvas metadata
 
-As a user using a cloud LLM provider, I want to know that selected Canvas snippets will be sent to that provider before I send the question.
+OpenAI
+  - hosts uploaded files
+  - hosts vector stores
+  - chunks, embeds, and indexes vector store files
+  - runs Responses API answer generation with file_search
+```
 
-## 5. Key Constraints
+### 6.2 SQLite Is A Catalog, Not The Vector Store
 
-### No Canvas API Developer Key
+SQLite stores:
 
-The extension cannot depend on Canvas API OAuth apps, developer keys, or server-side Canvas API access. It may use:
+- Canvas origin, course ID, course name, and Canvas current-user identity when available.
+- OpenAI `vector_store_id`.
+- OpenAI uploaded file IDs.
+- OpenAI vector store file IDs.
+- Material hashes and Canvas update timestamps.
+- Sync generation IDs.
+- Indexing status and error records.
+- Citation metadata needed by the UI.
 
-- `chrome.scripting.executeScript` / `browser.scripting.executeScript`.
-- Extension content scripts.
-- DOM reads from Canvas pages the user opens.
-- `fetch(url, { credentials: "include" })` for URLs accessible to the user's current Canvas browser session, subject to browser permissions, CORS, redirects, SSO behavior, and institutional restrictions.
-- Direct browser-accessible file URLs when permitted by Canvas and the browser.
+SQLite does not store:
 
-### Privacy-Minimized Context
+- embeddings
+- vector chunks
+- OpenAI vector-store search indexes
+- raw Canvas files
+- Canvas cookies or access tokens
+- long-lived raw Canvas HTML or full course dumps
 
-The extension must avoid collecting or retaining more Canvas data than necessary. Default behavior must be on-demand, visible, scoped, and bounded.
+Prompt-time lookup is:
 
-### Browser Permission Scope
+```text
+course identity
+  -> SQLite course row
+  -> vector_store_id
+  -> Responses API file_search
+  -> OpenAI-hosted vector store
+  -> OpenAI file IDs in citations/results
+  -> SQLite citation metadata
+  -> UI source chips
+```
 
-Host permissions should be restricted to configured Canvas domains whenever possible:
+## 7. Course Identity And Isolation
+
+The backend must key a course index by:
+
+```text
+canvas_origin + course_id + canvas_user_id_or_profile_key
+```
+
+The extension should collect Canvas current-user/profile information when available from Canvas same-origin APIs. If Canvas user identity is unavailable, the extension must send a generated extension profile key so the backend does not use only origin + course ID on shared machines.
+
+The SQLite schema must include nullable fields for future hosted authentication:
+
+- `local_profile_id`
+- `canvas_user_id`
+- `hosted_user_id`
+- `auth_subject`
+
+For v1, `hosted_user_id` and `auth_subject` remain empty.
+
+## 8. Course Manifest
+
+### 8.1 Manifest Purpose
+
+The manifest is the lightweight course inventory sent from the extension to the backend. It lets the backend decide what is new, changed, unchanged, unsupported, or stale before any upload work happens.
+
+The manifest must be deduplicated before backend sync.
+
+### 8.2 Manifest Shape
+
+The extension sends:
 
 ```json
 {
-  "host_permissions": [
-    "https://school.instructure.com/*",
-    "https://*.instructure.com/*"
-  ]
+  "canvasOrigin": "https://canvas.example.edu",
+  "courseId": "12345",
+  "courseName": "Biology 101",
+  "canvasUserId": "67890",
+  "localProfileId": "profile_abc",
+  "collectedAt": "2026-06-04T12:00:00Z",
+  "materials": [],
+  "placements": [],
+  "collectionErrors": []
 }
 ```
 
-For institution-specific deployments, prefer the school's exact Canvas domain over `*.instructure.com`.
+Each material contains:
 
-## 6. Existing Page Assist Architecture To Reuse
+```json
+{
+  "materialKey": "assignment:77",
+  "kind": "assignment",
+  "title": "Midterm Policy",
+  "canvasUrl": "https://canvas.example.edu/courses/12345/assignments/77",
+  "canvasUpdatedAt": "2026-05-31T10:00:00Z",
+  "contentHash": "sha256:...",
+  "size": 0,
+  "contentType": "",
+  "body": "Canvas-native body when available",
+  "fileId": "",
+  "fileName": "",
+  "fileDownloadUrl": "",
+  "supportedForIndexing": true
+}
+```
 
-Page Assist demonstrates the required extension-to-LLM pattern:
+Each placement contains:
 
-1. User opens extension UI or side panel.
-2. Extension reads active tab or selected tabs via browser APIs.
-3. Extension extracts HTML, title, URL, PDF state, images, files, or search results.
-4. Extension parses content into text.
-5. Chat mode builds a message containing chat history, user question, system prompt, and extracted context.
-6. `pageAssistModel()` chooses the provider adapter.
-7. The model streams a response.
-8. Final message and metadata are saved locally.
+```json
+{
+  "materialKey": "file:123",
+  "sourceKind": "module",
+  "moduleId": "456",
+  "moduleName": "Week 4",
+  "moduleItemId": "789",
+  "position": 3,
+  "label": "Week 4 Slides"
+}
+```
 
-The Canvas product should keep the provider abstraction and streaming model flow, but replace generic context sources with Canvas-specific collectors and parsers.
+### 8.3 Canvas-Native Content
 
-## 7. Desired User Experience
+Canvas-native records are uploaded as synthetic Markdown files, one Markdown file per material:
 
-### Entry Points
+- one per page
+- one per assignment
+- one per announcement
+- one per discussion topic prompt
+- one per module summary record when the module item itself is not otherwise represented by a page, assignment, discussion, or file
 
-- Browser side panel available on Canvas pages.
-- Optional full Web UI for settings, cache management, model/provider setup, and source inspection.
-- Context menu on Canvas pages: “Ask about this Canvas page”.
-- Optional toolbar icon behavior:
-  - On Canvas: open Canvas Assistant side panel.
-  - Outside Canvas: show “Open Canvas first” empty state.
+The Markdown file must include a compact metadata header and the cleaned body:
 
-### Main Chat UI
+```markdown
+# Midterm Policy
 
-The side panel should include:
+Source type: assignment
+Course: Biology 101
+Canvas material key: assignment:77
+Canvas URL: https://canvas.example.edu/courses/12345/assignments/77
+Module placements: Week 7
+Updated at: 2026-05-31T10:00:00Z
 
-- Current course indicator.
-- Current Canvas page indicator.
-- Context scope selector.
-- Message input.
-- Model selector.
-- “Using Canvas context” toggle.
-- Visible source chips after an answer.
-- Privacy/provider notice when using cloud models.
-- Cache/index status.
+<cleaned Canvas body text>
+```
 
-Recommended scope selector:
+This improves citation quality and delta sync. The backend must use batch ingestion so hundreds of materials do not become hundreds of repeated upload/index operations on every prompt.
+
+## 9. Deduplication
+
+Deduplication happens before backend sync.
+
+Stable keys:
+
+- Canvas file: `file:<file_id>`
+- Canvas page: `page:<page_url_or_page_id>`
+- Assignment: `assignment:<assignment_id>`
+- Announcement: `announcement:<announcement_id>`
+- Discussion topic: `discussion:<discussion_topic_id>`
+- Module item without represented target: `module_item:<module_item_id>`
+- Canvas link fallback: `canvas_url:<normalized_canvas_url>`
+
+URL normalization must:
+
+- keep only Canvas-origin URLs for v1 indexing
+- lowercase hostnames
+- remove trailing slashes where safe
+- remove fragments
+- remove known tracking parameters where safe
+- unwrap Canvas redirect URLs when the target is still Canvas-origin
+
+Duplicate placements are preserved in `material_placements` instead of duplicating uploaded files.
+
+## 10. File Handling
+
+### 10.1 Supported Files
+
+The backend must maintain an allowlist based on OpenAI File Search-supported file types. It must pre-filter files before upload and record skipped files as warnings.
+
+The allowlist should include common Canvas course document/text formats that OpenAI File Search supports, such as PDF, Office document/presentation formats where supported, HTML, plain text, Markdown, JSON, CSV/TSV, XML, and source/text-like files.
+
+The allowlist must be implemented centrally so it can be updated as OpenAI support changes.
+
+### 10.2 File Size
+
+Files over 60 MB are skipped.
+
+Skipped files must be visible in the answer warning/status payload:
+
+```json
+{
+  "materialKey": "file:123",
+  "title": "Lecture Recording.mp4",
+  "reason": "too_large",
+  "message": "Skipped because the file is larger than the 60 MB indexing limit."
+}
+```
+
+### 10.3 Signed URLs
+
+The extension must not send Canvas cookies, access tokens, or Authorization headers to the backend.
+
+For Canvas-hosted files selected for sync:
+
+1. The content script verifies the active tab is still the expected Canvas course.
+2. The content script calls Canvas same-origin file APIs using the browser session.
+3. The content script returns only a short-lived signed file URL plus verified metadata.
+4. The backend fetches the signed URL, uploads the file to OpenAI, and discards bytes immediately after upload.
+
+Signed URLs must not be logged.
+
+## 11. OpenAI Vector Store Lifecycle
+
+### 11.1 Creation
+
+On first prompt after consent:
+
+1. Backend receives course identity and manifest.
+2. Backend computes the user/course key.
+3. Backend checks SQLite for an existing active course row.
+4. If no row exists, backend creates an OpenAI vector store.
+5. Backend stores `vector_store_id` in SQLite.
+6. Backend begins staged sync.
+
+Vector store name format:
 
 ```text
-Context Scope:
-- Current page only
-- Current module
-- Recently viewed course pages
-- Collected course cache
-- Manual selected Canvas sources
+canvasgpt:<hashed_canvas_origin>:<course_id>:<profile_or_user_hash>
 ```
 
-Default scope for MVP: `Current page only`.
+Do not include raw student names or sensitive personal data in vector store names.
 
-### Source Display
+### 11.2 Retention
 
-Each grounded answer must show:
+The backend sets a 7-day inactive expiration policy where supported by the OpenAI API.
 
-- Source title.
-- Source type: assignment, page, module, discussion, file, syllabus, announcement.
-- Canvas URL.
-- Collection timestamp.
-- Optional snippet preview.
+The backend also stores local `expires_at` and `last_active_at` values in SQLite for cleanup and UI display.
 
-### Collection Status
+### 11.3 Sync Generations
 
-When collecting context, show precise status:
+Each sync run creates an `active_generation_id`, such as:
 
 ```text
-Reading current Canvas page...
-Found 8 module links.
-Parsing Assignment: Essay 2...
-Extracted 3 relevant snippets.
+sync_2026_06_04_120000_abcd
 ```
 
-Avoid ambiguous states such as “Indexing everything” unless actually true.
+Every vector store file for the current sync must include this generation ID as an attribute when attached.
 
-## 8. Context Collection Model
+Prompt-time File Search must filter on `generation_id` where possible so stale files from prior syncs are not retrieved.
 
-### Principle
+Old generation files can be deleted after a successful newer generation is ready. If deletion fails, the filter prevents stale retrieval.
 
-The LLM never reads Canvas directly. The extension reads Canvas content from the browser/session, converts it into clean text, selects relevant snippets, then sends only those snippets to the model.
+### 11.4 Batch Ingestion
 
-### Active Page Extraction
+The backend must use OpenAI vector store file batch operations for throughput. Batches can contain up to 500 files, so this design can handle courses with hundreds of pages, discussions, links, and files without sending a separate vector-store attach request for every item.
 
-The extension should collect the current Canvas page using an injected script:
+Upload and attach work should be chunked into bounded batches:
 
-```ts
-async function collectActiveCanvasPage(tabId: number): Promise<RawCanvasPage> {
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => ({
-      url: window.location.href,
-      title: document.title,
-      html: document.documentElement.outerHTML,
-      text: document.body?.innerText || "",
-      contentType: document.contentType
-    })
-  })
-
-  return result.result
-}
+```text
+native Markdown files batch 1
+native Markdown files batch 2 if needed
+Canvas file batch 1
+Canvas file batch 2 if needed
 ```
 
-Raw HTML must be treated as transient. It should be parsed and discarded unless debugging is explicitly enabled.
+The backend records per-material status so partial failures do not fail the entire course.
 
-### Same-Session Link Fetching
+## 12. Staged First-Prompt Indexing
 
-For links discovered inside Canvas, the extension may fetch pages using the user's browser session:
+First prompt behavior:
 
-```ts
-async function fetchCanvasHtml(url: string): Promise<string> {
-  const response = await fetch(url, {
-    credentials: "include",
-    redirect: "follow"
-  })
+1. Student enters prompt.
+2. Extension confirms course manifest is collected or collects it.
+3. Extension requests per-course consent if not already granted.
+4. Backend prepares/reuses vector store.
+5. Backend syncs Canvas-native Markdown materials first.
+6. Backend starts Canvas file uploads in batches.
+7. Backend answers once Canvas-native content is indexed and at least one usable source exists.
+8. The answer includes warnings for pending, skipped, or failed file indexing.
 
-  if (!response.ok) throw new Error(`Canvas fetch failed: ${response.status}`)
-  return await response.text()
-}
+The first prompt should not return "try again later" unless indexing fails completely or no usable Canvas materials are available.
+
+If file indexing continues after the first answer, status polling should show progress and later prompts should benefit from more indexed files.
+
+## 13. Retrieval And Answer Generation
+
+v1 uses the OpenAI Responses API `file_search` tool directly. It does not perform a separate vector store pre-search before answer generation.
+
+Backend answer flow:
+
+```text
+prompt + course identity
+  -> validate request
+  -> load course row from SQLite
+  -> verify vector_store_id exists
+  -> ensure index is ready or partially usable
+  -> call Responses API with file_search
+  -> include file_search_call.results for citation/debug metadata
+  -> map OpenAI file IDs to Canvas material rows
+  -> return answer payload
 ```
 
-This must only happen for allowlisted Canvas domains and only inside user-selected context scope.
+Tool configuration:
 
-### Link Discovery
-
-From Canvas pages, discover links for:
-
-- Course home.
-- Syllabus.
-- Modules.
-- Module items.
-- Assignments.
-- Pages/wiki pages.
-- Discussions.
-- Announcements.
-- Files.
-- Rubrics when linked/visible.
-
-Discovery must be conservative. For MVP, avoid recursive full-course crawling by default.
-
-### Recommended Collection Scopes
-
-#### Current Page Only
-
-Collect and parse only the active page. Lowest privacy risk and fastest.
-
-#### Current Module
-
-From a module page, collect visible module item links and fetch a bounded number of linked Canvas items. Requires progress UI and cancellation.
-
-#### Recently Viewed
-
-Cache cleaned chunks from Canvas pages the user has opened during normal browsing. This avoids aggressive crawling.
-
-#### Course Cache
-
-Optional advanced mode. User explicitly triggers “Build course context cache.” Must show what will be collected, use strict size limits, and support cancellation.
-
-## 9. Canvas Page Detection
-
-### URL Detection
-
-Implement Canvas detection using configurable domains and URL patterns:
-
-```ts
-type CanvasRoute =
-  | "course_home"
-  | "modules"
-  | "module_item"
-  | "assignment"
-  | "page"
-  | "discussion"
-  | "announcement"
-  | "file"
-  | "syllabus"
-  | "quiz"
-  | "unknown"
-```
-
-Detection examples:
-
-```ts
-function parseCanvasRoute(url: string): CanvasRouteInfo | null {
-  const parsed = new URL(url)
-
-  if (!isAllowedCanvasHost(parsed.hostname)) return null
-
-  const courseMatch = parsed.pathname.match(/\/courses\/(\d+)/)
-  if (!courseMatch) return null
-
-  const courseId = courseMatch[1]
-
-  if (/\/assignments\/\d+/.test(parsed.pathname)) return { courseId, route: "assignment" }
-  if (/\/modules/.test(parsed.pathname)) return { courseId, route: "modules" }
-  if (/\/pages\//.test(parsed.pathname)) return { courseId, route: "page" }
-  if (/\/discussion_topics\/\d+/.test(parsed.pathname)) return { courseId, route: "discussion" }
-  if (/\/announcements\/\d+/.test(parsed.pathname)) return { courseId, route: "announcement" }
-  if (/\/files\/\d+/.test(parsed.pathname)) return { courseId, route: "file" }
-  if (/\/assignments\/syllabus/.test(parsed.pathname)) return { courseId, route: "syllabus" }
-
-  return { courseId, route: "unknown" }
-}
-```
-
-### DOM Detection
-
-Use DOM fallbacks because institutions may use custom routes or Canvas markup:
-
-- Presence of `#content`.
-- Canvas-specific classes such as `.ic-app`, `.ic-Layout-wrapper`, `.course-title`, `.assignment-title`, `.module-item-title`.
-- Meta tags or links referencing Canvas assets.
-
-## 10. Parsing Requirements
-
-### Parser Contract
-
-Every parser returns normalized documents:
-
-```ts
-type CanvasContextDoc = {
-  id: string
-  courseId: string
-  route: CanvasRoute
-  type: "assignment" | "module" | "page" | "discussion" | "announcement" | "file" | "syllabus" | "rubric" | "unknown"
-  title: string
-  url: string
-  text: string
-  metadata: {
-    dueAt?: string
-    availableFrom?: string
-    availableUntil?: string
-    points?: string
-    author?: string
-    updatedAt?: string
-    collectedAt: number
-    sourceHash: string
+```json
+{
+  "type": "file_search",
+  "vector_store_ids": ["vs_..."],
+  "filters": {
+    "type": "eq",
+    "key": "generation_id",
+    "value": "sync_..."
   }
 }
 ```
 
-### Base Parser
+The system prompt must instruct the model:
 
-All page-specific parsers should fall back to:
+- answer only from indexed Canvas course materials for course-specific claims
+- say when indexed context is insufficient
+- do not invent deadlines, grading policies, instructor intent, exam scope, or submission requirements
+- cite course-specific claims
+- do not claim to access Canvas live during answer generation
 
-- Remove navigation, menus, sidebars, scripts, styles, hidden elements.
-- Prefer main content containers:
-  - `#content`
-  - `main`
-  - `[role="main"]`
-  - `.ic-Layout-contentMain`
-- Use `innerText` after pruning.
-- Preserve headings and list boundaries where possible.
+The backend should request included File Search results for citation/debug metadata. The UI should not display raw retrieved snippets in v1.
 
-### Assignment Parser
+## 14. Backend API
 
-Extract:
+### 14.1 `GET /health`
 
-- Assignment title.
-- Description/instructions.
-- Due date text.
-- Availability dates.
-- Points.
-- Submission type.
-- Rubric text if visible.
-- Attached file links.
-- Module breadcrumb if visible.
+Existing health endpoint remains.
 
-Output document types:
+Response:
 
-- `assignment`
-- optional `rubric`
-- optional `file_link` metadata entries
+```json
+{ "status": "ok" }
+```
 
-### Module Parser
+### 14.2 `POST /course-index/prepare`
 
-Extract:
+Creates or retrieves the local course record and OpenAI vector store, computes sync plan, and returns consent/index state.
 
-- Module titles.
-- Module item titles.
-- Item type.
-- Item URLs.
-- Completion requirements if visible.
-- Lock/unlock state text if visible.
+Request:
 
-Module parser should not automatically fetch all linked content unless scope is `Current module` or broader.
-
-### Page/Wiki Parser
-
-Extract:
-
-- Page title.
-- Body content.
-- Linked files.
-- Embedded iframes as metadata only unless readable.
-
-### Discussion Parser
-
-Extract:
-
-- Discussion prompt.
-- Instructor-authored content.
-- Replies only if user explicitly includes discussions in scope.
-
-Privacy default: exclude student replies unless enabled.
-
-### Announcement Parser
-
-Extract:
-
-- Announcement title.
-- Body.
-- Posted date if visible.
-
-### Syllabus Parser
-
-Extract:
-
-- Syllabus body.
-- Course summary table rows when visible.
-- Assignment due dates listed on syllabus.
-- Course policy sections.
-
-### File Parser
-
-Supported MVP:
-
-- PDF text extraction.
-- HTML/text files.
-- Links to previewable files.
-
-Later:
-
-- DOCX.
-- PPTX.
-- OCR for scanned PDFs.
-
-File parser must enforce size and time limits.
-
-## 11. Chunking And Retrieval
-
-### Chunking
-
-Convert parsed documents into chunks:
-
-```ts
-type CanvasChunk = {
-  id: string
-  courseId: string
-  docId: string
-  title: string
-  type: CanvasContextDoc["type"]
-  url: string
-  text: string
-  tokenEstimate: number
-  metadata: CanvasContextDoc["metadata"]
+```json
+{
+  "canvasOrigin": "https://canvas.example.edu",
+  "courseId": "12345",
+  "courseName": "Biology 101",
+  "canvasUserId": "67890",
+  "localProfileId": "profile_abc",
+  "manifest": {
+    "materials": [],
+    "placements": [],
+    "collectionErrors": []
+  }
 }
 ```
 
-Chunking rules:
+Response:
 
-- Target 500-900 tokens per chunk.
-- Preserve heading hierarchy.
-- Keep assignment due date/rubric metadata attached to every relevant assignment chunk.
-- Never split table rows in ways that lose meaning.
-- Add overlap of 80-120 tokens for long documents.
-
-### Retrieval MVP
-
-Use hybrid local retrieval:
-
-- Keyword scoring for exact terms, assignment names, due dates, module titles.
-- Optional embeddings if a local embedding provider is configured.
-- Recency boost for current page and current module.
-- Source-type boost based on query intent.
-
-Query intent examples:
-
-- “due”, “when”, “deadline” -> boost assignments, syllabus, module items.
-- “submit”, “requirements”, “rubric” -> boost assignments/rubrics.
-- “reading”, “lecture”, “module” -> boost modules/pages/files.
-- “policy”, “late”, “attendance” -> boost syllabus/pages.
-
-### Retrieval Output
-
-Return a bounded list:
-
-```ts
-type RetrievalResult = {
-  chunks: CanvasChunk[]
-  sources: CanvasSourceCitation[]
-  estimatedTokens: number
+```json
+{
+  "courseIndexId": "local_course_abc",
+  "consentRequired": true,
+  "consentGranted": false,
+  "vectorStoreStatus": "not_created",
+  "syncPlan": {
+    "newCount": 120,
+    "changedCount": 0,
+    "unchangedCount": 0,
+    "staleCount": 0,
+    "skippedCount": 12
+  },
+  "warnings": []
 }
 ```
 
-Default limits:
+### 14.3 `POST /course-index/consent`
 
-- Max 8 chunks.
-- Max 6 sources.
-- Max 6,000-10,000 input tokens depending on selected model context window.
+Records per-course consent for OpenAI remote indexing.
 
-## 12. Prompt Construction
+Request:
 
-### Canvas Grounded System Prompt
-
-Use a strict Canvas-grounding prompt:
-
-```text
-You are helping a student understand material from their Canvas course.
-
-Use the provided Canvas context to answer. If the answer depends on assignment instructions,
-due dates, rubrics, course policy, required readings, or submission requirements, cite the
-source title. If the answer is not present in the provided Canvas context, say that you could
-not find it in the collected Canvas context and suggest which Canvas area to check.
-
-Do not invent due dates, grading policies, quiz answers, or instructor intent.
-```
-
-### Context Format
-
-The model input should include structured source blocks:
-
-```text
-<canvas-context course_id="12345" collected_at="2026-05-14T18:30:00Z">
-  <source id="s1" type="assignment" title="Essay 2: Rhetorical Analysis" url="https://...">
-    Due Friday at 11:59 PM. Submit a PDF...
-  </source>
-  <source id="s2" type="syllabus" title="Late Work Policy" url="https://...">
-    Late work loses 10% per day...
-  </source>
-</canvas-context>
-
-Student question:
-When is Essay 2 due and what do I need to submit?
-```
-
-### Citation Requirement
-
-The assistant should answer with citations:
-
-```text
-Essay 2 is due Friday at 11:59 PM, and you need to submit a PDF. Source: Essay 2: Rhetorical Analysis.
-```
-
-The UI should map cited source titles back to source chips.
-
-## 13. Privacy And Data Governance
-
-### Default Data Policy
-
-- Do not store raw Canvas HTML.
-- Do not permanently store full course dumps by default.
-- Store cleaned chunks only when needed for cache/retrieval.
-- Keep source metadata minimal.
-- Use TTL expiration.
-- Enforce per-course cache size caps.
-- Provide a clear cache deletion UI.
-
-### Recommended Storage Tiers
-
-#### Tier 1: Ephemeral Memory
-
-Used for:
-
-- Current page raw HTML.
-- Current question retrieved snippets.
-- Temporary parse state.
-
-Lifetime:
-
-- Current session or side-panel lifecycle.
-
-#### Tier 2: Short-Lived Local Cache
-
-Used for:
-
-- Cleaned parsed chunks.
-- Source metadata.
-- Optional lightweight retrieval index.
-
-Default TTL:
-
-- 24 hours for current page/recently viewed.
-- 7 days only if user enables course cache.
-
-#### Tier 3: Optional Local Vector Index
-
-Used for:
-
-- Embeddings for cleaned chunks.
-
-Rules:
-
-- Local-only.
-- User-visible.
-- Clearable per course.
-- Disabled when no embedding provider is configured.
-
-### Cloud Provider Warning
-
-Before sending Canvas snippets to a cloud model, the UI must disclose:
-
-```text
-Selected Canvas context will be sent to your configured model provider to answer this question.
-```
-
-For local models:
-
-```text
-Canvas context is sent to your local model endpoint.
-```
-
-### Sensitive Content Filters
-
-The extension should detect and optionally exclude:
-
-- Grades.
-- Submission comments.
-- Student discussion replies.
-- Names/emails in discussion threads.
-- Peer review content.
-- Accommodations or private feedback.
-
-MVP default: include instructor/course-authored content, exclude student replies unless user enables them.
-
-## 14. Data Model
-
-### CanvasCourse
-
-```ts
-type CanvasCourse = {
-  id: string
-  domain: string
-  name?: string
-  lastSeenAt: number
+```json
+{
+  "courseIndexId": "local_course_abc",
+  "granted": true
 }
 ```
 
-### CanvasSourceCitation
+Response:
 
-```ts
-type CanvasSourceCitation = {
-  id: string
-  courseId: string
-  docId: string
-  title: string
-  type: CanvasContextDoc["type"]
-  url: string
-  collectedAt: number
+```json
+{
+  "courseIndexId": "local_course_abc",
+  "consentGranted": true
 }
 ```
 
-### CanvasCacheEntry
+### 14.4 `POST /course-index/sync`
 
-```ts
-type CanvasCacheEntry = {
-  id: string
-  courseId: string
-  url: string
-  title: string
-  type: CanvasContextDoc["type"]
-  chunks: CanvasChunk[]
-  sourceHash: string
-  collectedAt: number
-  expiresAt: number
+Runs staged sync for new/changed materials.
+
+Request:
+
+```json
+{
+  "courseIndexId": "local_course_abc",
+  "generationId": "sync_2026_06_04_120000_abcd",
+  "materials": [],
+  "signedFiles": []
 }
 ```
 
-### Storage Tables
+Response:
 
-Recommended IndexedDB tables:
-
-```ts
-canvasCourses: "id, domain, name, lastSeenAt"
-canvasSources: "id, courseId, url, title, type, collectedAt, expiresAt"
-canvasChunks: "id, courseId, docId, type, title, url, collectedAt, expiresAt"
-canvasEmbeddings: "id, courseId, chunkId, vector, modelId, createdAt, expiresAt"
-canvasSettings: "id, value"
-```
-
-## 15. Proposed Code Architecture
-
-```text
-src/canvas/
-  detect.ts
-  permissions.ts
-  collect/
-    active-page.ts
-    link-discovery.ts
-    fetch-canvas-page.ts
-    collect-module.ts
-    collect-recent.ts
-  parse/
-    index.ts
-    base.ts
-    assignment.ts
-    module.ts
-    page.ts
-    discussion.ts
-    announcement.ts
-    syllabus.ts
-    file.ts
-  retrieval/
-    chunk.ts
-    keyword.ts
-    embedding.ts
-    hybrid.ts
-    intent.ts
-  prompt/
-    build-canvas-prompt.ts
-    citations.ts
-  cache/
-    schema.ts
-    course-cache.ts
-    ttl.ts
-    clear-cache.ts
-  ui/
-    CanvasContextScope.tsx
-    CanvasSourceChips.tsx
-    CanvasCacheSettings.tsx
-    CanvasCollectionStatus.tsx
-  chat/
-    canvasChatMode.ts
-```
-
-## 16. Canvas Chat Mode
-
-Create a dedicated chat mode rather than overloading generic RAG:
-
-```ts
-async function canvasChatMode(params: {
-  message: string
-  tabId: number
-  selectedModel: string
-  scope: CanvasContextScope
-  history: ChatHistory
-  signal: AbortSignal
-}) {
-  const route = await detectCanvasRouteFromTab(tabId)
-  const contextDocs = await collectCanvasContext({ tabId, route, scope, signal })
-  const chunks = await chunkCanvasDocs(contextDocs)
-  await cacheCanvasChunks(chunks)
-  const retrieved = await retrieveCanvasContext({ query: params.message, route, scope })
-  const modelMessages = await buildCanvasPrompt({
-    question: params.message,
-    history: params.history,
-    retrieved
-  })
-  const model = await pageAssistModel({ model: params.selectedModel, baseUrl })
-  return model.stream(modelMessages, { signal })
+```json
+{
+  "courseIndexId": "local_course_abc",
+  "generationId": "sync_2026_06_04_120000_abcd",
+  "status": "partial",
+  "nativeIndexedCount": 96,
+  "fileIndexedCount": 20,
+  "pendingFileCount": 10,
+  "skippedCount": 12,
+  "failedCount": 2,
+  "warnings": []
 }
 ```
 
-Routing priority:
+### 14.5 `GET /course-index/status`
 
-1. If active tab is Canvas and Canvas context is enabled, use `canvasChatMode`.
-2. If user attaches non-Canvas files, use document mode.
-3. If user disables Canvas context, use normal chat.
+Returns current indexing state.
 
-## 17. Permissions
-
-### Required
-
-- `storage`
-- `activeTab`
-- `scripting`
-- `sidePanel`
-- `contextMenus`
-- `notifications` optional
-- Host permission for configured Canvas domains.
-
-### Optional
-
-- File host domains only if institution uses external file/CDN domains.
-- Downloads only if required for file extraction; avoid for MVP if possible.
-
-### Permission UX
-
-During setup:
-
-- Ask user to add their Canvas domain.
-- Explain why the extension needs access:
+Query parameters:
 
 ```text
-This extension reads Canvas pages you open so it can provide course context to your selected model.
+canvasOrigin
+courseId
+canvasUserId or localProfileId
 ```
 
-## 18. Edge Cases
+Response:
 
-### Locked Or Unpublished Content
+```json
+{
+  "courseIndexId": "local_course_abc",
+  "status": "ready",
+  "vectorStoreId": "vs_abc",
+  "lastSyncedAt": "2026-06-04T12:00:00Z",
+  "expiresAt": "2026-06-11T12:00:00Z",
+  "counts": {
+    "materials": 182,
+    "indexed": 170,
+    "pending": 0,
+    "skipped": 12,
+    "failed": 0
+  },
+  "warnings": []
+}
+```
 
-Do not attempt to access. Mark as unavailable if visible as locked.
+### 14.6 `DELETE /course-index/course`
 
-### SSO Redirects
+Fully clears a course index.
 
-If fetch receives login/SSO HTML instead of Canvas content, detect it and stop. Ask user to open the page manually.
+Delete behavior:
 
-### Cross-Origin Iframes
+- delete vector store files from the OpenAI vector store
+- delete uploaded OpenAI files
+- delete the OpenAI vector store
+- delete local SQLite rows for the course index
 
-Do not bypass iframe restrictions. Show metadata:
+Response:
+
+```json
+{
+  "deleted": true,
+  "remoteDeleted": true,
+  "localDeleted": true,
+  "warnings": []
+}
+```
+
+### 14.7 `POST /generate-response`
+
+Generates an answer using File Search over the course vector store.
+
+Request:
+
+```json
+{
+  "canvasOrigin": "https://canvas.example.edu",
+  "courseId": "12345",
+  "canvasUserId": "67890",
+  "localProfileId": "profile_abc",
+  "prompt": "What is the midterm policy?"
+}
+```
+
+Response:
+
+```json
+{
+  "answer": "The indexed course materials say ...",
+  "insufficientContext": false,
+  "citations": [
+    {
+      "materialKey": "assignment:77",
+      "title": "Midterm Policy",
+      "kind": "assignment",
+      "canvasUrl": "https://canvas.example.edu/courses/12345/assignments/77",
+      "placements": ["Week 7"]
+    }
+  ],
+  "warnings": [
+    "10 Canvas files are still indexing and were not available for this answer."
+  ]
+}
+```
+
+## 15. SQLite Schema
+
+The implementation may use Python `sqlite3` directly. The default path is:
 
 ```text
-Embedded external content detected. Open it directly to include it.
+backend/.data/canvasgpt.sqlite3
 ```
 
-### Large Files
-
-Use limits:
-
-- Max PDF size MVP: 20 MB.
-- Max pages parsed per file: configurable, default 80.
-- Timeout: 30 seconds.
-- User cancellation required.
-
-### Scanned PDFs
-
-Detect low text extraction. Do not run OCR by default. Offer optional OCR with warning about speed/accuracy.
-
-### Discussions
-
-Default exclude student replies. Include prompt/discussion description and instructor posts where reliably detectable.
-
-### Quizzes
-
-High-risk. MVP should not parse active quiz attempt pages. It may parse quiz overview instructions only, not questions/answers.
-
-## 19. Security Requirements
-
-- Sanitize all HTML before rendering snippets in extension UI.
-- Never execute scripts from Canvas HTML.
-- Store text only after parsing; discard raw HTML.
-- Restrict fetches to allowlisted Canvas domains.
-- Prevent SSRF-like arbitrary URL fetching from user prompts.
-- Treat all Canvas text as untrusted input.
-- Avoid including credentials, cookies, or auth tokens in prompts.
-- Do not log raw Canvas content to console in production.
-- Add a debug mode that redacts content by default.
-
-## 20. Observability
-
-Local-only telemetry counters may include:
-
-- Number of sources collected.
-- Number of chunks retrieved.
-- Parse failures by route type.
-- Cache size.
-- Collection duration.
-
-Do not collect or transmit course content, source titles, URLs, names, or questions unless the user explicitly opts into diagnostics.
-
-## 21. MVP Scope
-
-### Must Have
-
-- Canvas domain detection.
-- Side panel only on Canvas pages.
-- Current page extraction.
-- Assignment/page/syllabus/module basic parsers.
-- Clean text chunking.
-- Keyword retrieval over current page and recently viewed Canvas pages.
-- Prompt construction with source citations.
-- Local cache with TTL and clear button.
-- Cloud/local model disclosure.
-- Answer streaming through existing model adapter pattern.
-
-### Should Have
-
-- Current module context collection.
-- PDF text extraction for Canvas files.
-- Recently viewed Canvas page cache.
-- Source chips in answers.
-- Sensitive discussion reply exclusion.
-- Per-course cache size cap.
-
-### Could Have
-
-- Local embedding retrieval.
-- Optional user-triggered course cache builder.
-- Announcement/discussion richer parsers.
-- OCR for scanned PDFs.
-- Custom parser rules per institution.
-
-### Won't Have In MVP
-
-- Canvas API integration.
-- Gradebook integration.
-- Quiz attempt parsing.
-- Full automatic course crawling.
-- Server-side storage.
-- Cross-origin LTI scraping.
-
-## 22. Acceptance Criteria
-
-### Current Assignment Question
-
-Given a user opens a Canvas assignment page and asks “what do I need to submit?”, the extension should:
-
-- Detect Canvas route as `assignment`.
-- Extract title, instructions, due date text if visible, and submission details.
-- Build a prompt containing only relevant assignment context.
-- Answer with at least one source citation.
-- Store no raw HTML after parsing.
-
-### Current Module Question
-
-Given a user opens a Canvas modules page and chooses `Current module`, the extension should:
-
-- Discover visible module item links.
-- Fetch only same-domain Canvas links in that module.
-- Respect max item and time limits.
-- Parse collected pages.
-- Retrieve relevant snippets.
-- Show collection status and allow cancellation.
-
-### Privacy Cache
-
-Given cached Canvas content exists, the user should be able to:
-
-- View courses with cached content.
-- See approximate cache size.
-- Clear one course cache.
-- Clear all Canvas cache.
-- See cache expiration settings.
-
-### Cloud Provider Warning
-
-Given the selected model is a cloud provider and Canvas context is enabled, the send button area should display a concise warning that selected Canvas snippets will be sent to the provider.
-
-## 23. Implementation Plan
-
-### Phase 1: Canvas Detection And Current Page Context
-
-- Add Canvas domain configuration.
-- Add `detect.ts`.
-- Add active-page collector.
-- Add base parser and assignment/page/syllabus/module parser.
-- Add Canvas context preview UI.
-- Add `canvasChatMode` using current page only.
-
-### Phase 2: Local Cache And Retrieval
-
-- Add Canvas IndexedDB tables.
-- Add chunker.
-- Add keyword retrieval.
-- Add TTL expiration.
-- Add cache settings UI.
-- Add source citations.
-
-### Phase 3: Module And File Context
-
-- Add module link discovery.
-- Add bounded same-session fetch.
-- Add PDF extraction.
-- Add collection progress/cancellation.
-- Add current module scope.
-
-### Phase 4: Privacy And Quality Hardening
-
-- Add sensitive-content filters.
-- Add cloud provider warning.
-- Add quiz-attempt exclusion.
-- Add SSO redirect detection.
-- Add parser tests with fixture HTML.
-- Add cache size enforcement.
-
-### Phase 5: Optional Embeddings
-
-- Add local embedding retrieval using configured model.
-- Add hybrid scoring.
-- Add course-level vector index.
-- Add explicit opt-in for longer-lived course cache.
-
-## 24. Testing Strategy
-
-### Unit Tests
-
-- URL route detection.
-- Domain allowlist.
-- HTML pruning.
-- Assignment parser.
-- Module parser.
-- Syllabus parser.
-- Chunking.
-- Keyword retrieval.
-- Prompt builder.
-- Sensitive-content filters.
-
-### Fixture Tests
-
-Use saved redacted Canvas HTML fixtures:
+The path can be overridden with:
 
 ```text
-fixtures/canvas/assignment.html
-fixtures/canvas/modules.html
-fixtures/canvas/page.html
-fixtures/canvas/syllabus.html
-fixtures/canvas/discussion.html
-fixtures/canvas/file-preview.html
-fixtures/canvas/sso-redirect.html
+CANVASGPT_DB_PATH
 ```
 
-Fixtures must be redacted and should not contain real student data.
+`backend/.data/` must be gitignored.
 
-### Browser Tests
+### 15.1 `courses`
 
-- Side panel opens on Canvas domain.
-- Current page context is collected.
-- Source chips render.
-- Cache clear works.
-- Cloud provider warning appears.
-- Non-Canvas page shows empty state.
+```text
+id TEXT PRIMARY KEY
+canvas_origin TEXT NOT NULL
+course_id TEXT NOT NULL
+course_name TEXT
+canvas_user_id TEXT
+local_profile_id TEXT
+hosted_user_id TEXT
+auth_subject TEXT
+course_key_hash TEXT NOT NULL UNIQUE
+vector_store_id TEXT
+active_generation_id TEXT
+consent_granted INTEGER NOT NULL DEFAULT 0
+sync_status TEXT NOT NULL DEFAULT 'not_started'
+last_synced_at TEXT
+last_active_at TEXT
+expires_at TEXT
+created_at TEXT NOT NULL
+updated_at TEXT NOT NULL
+```
 
-### Manual QA
+### 15.2 `materials`
 
-- Assignment with rubric.
-- Module with mixed item types.
-- PDF file preview.
-- Syllabus with course summary table.
-- Discussion with student replies.
-- SSO timeout.
-- Locked module item.
-- Cloud model vs local model disclosure.
+```text
+id TEXT PRIMARY KEY
+course_id TEXT NOT NULL
+material_key TEXT NOT NULL
+kind TEXT NOT NULL
+title TEXT
+canvas_url TEXT
+canvas_updated_at TEXT
+content_hash TEXT
+size INTEGER
+content_type TEXT
+file_name TEXT
+openai_file_id TEXT
+vector_store_file_id TEXT
+generation_id TEXT
+status TEXT NOT NULL
+error_type TEXT
+error_message TEXT
+created_at TEXT NOT NULL
+updated_at TEXT NOT NULL
+UNIQUE(course_id, material_key)
+```
 
-## 25. Production Risks And Mitigations
+### 15.3 `material_placements`
 
-### Risk: Canvas DOM Changes
+```text
+id TEXT PRIMARY KEY
+course_id TEXT NOT NULL
+material_key TEXT NOT NULL
+source_kind TEXT
+module_id TEXT
+module_name TEXT
+module_item_id TEXT
+position INTEGER
+label TEXT
+created_at TEXT NOT NULL
+```
 
-Mitigation:
+### 15.4 `sync_runs`
 
-- Prefer resilient content extraction from main content areas.
-- Use route-specific selectors only as enhancements.
-- Maintain fixture coverage.
+```text
+id TEXT PRIMARY KEY
+course_id TEXT NOT NULL
+generation_id TEXT NOT NULL
+status TEXT NOT NULL
+new_count INTEGER NOT NULL DEFAULT 0
+changed_count INTEGER NOT NULL DEFAULT 0
+unchanged_count INTEGER NOT NULL DEFAULT 0
+indexed_count INTEGER NOT NULL DEFAULT 0
+pending_count INTEGER NOT NULL DEFAULT 0
+skipped_count INTEGER NOT NULL DEFAULT 0
+failed_count INTEGER NOT NULL DEFAULT 0
+warnings_json TEXT
+started_at TEXT NOT NULL
+completed_at TEXT
+```
 
-### Risk: Over-Collection
+## 16. Extension UX
 
-Mitigation:
+### 16.1 Main Side Panel
 
-- Default to current page.
-- Require explicit scope expansion.
-- Cap pages/files/time.
-- Show collection progress.
+The side panel should show:
 
-### Risk: Sensitive Data Sent To Cloud Model
+- current Canvas course indicator
+- material collection/index status
+- prompt field
+- send action
+- answer area
+- citation/source chips
+- warnings area
+- clear course index action
 
-Mitigation:
+### 16.2 Consent Copy
 
-- Source preview before send.
-- Cloud warning.
-- Exclude student replies by default.
-- Local model recommendation.
+Before the first course index upload:
 
-### Risk: Stale Due Dates
+```text
+CanvasGPT can index this course with OpenAI File Search so answers can use your Canvas materials.
 
-Mitigation:
+This uploads Canvas course pages, assignments, announcements, discussion prompts, module metadata, and supported Canvas files to OpenAI storage for this course. External websites and student discussion replies are not indexed. The course index expires after 7 inactive days and can be deleted at any time.
+```
 
-- Include collection timestamp.
-- Re-collect current page on each question when deadline intent is detected.
-- Cite source.
+Actions:
 
-### Risk: Incomplete Context
+- `Index this course`
+- `Cancel`
 
-Mitigation:
+### 16.3 Status States
 
-- Answer should say when information was not found.
-- UI should show which sources were used.
-- Offer “expand to current module” action after weak retrieval.
+The UI must handle:
 
-## 26. Agent Work Breakdown
+- `not_collected`
+- `needs_consent`
+- `preparing`
+- `uploading_native`
+- `uploading_files`
+- `indexing`
+- `partial`
+- `ready`
+- `failed`
+- `clearing`
 
-### Agent A: Canvas Detection And Permissions
+### 16.4 Citations
 
-Owns:
+Citation chips show:
 
-- `src/canvas/detect.ts`
-- `src/canvas/permissions.ts`
-- Canvas domain settings UI
-- Route detection tests
+- source title
+- source type
+- Canvas URL
+- module placement when known
 
-### Agent B: Collectors
+The UI should not show raw File Search snippets in v1.
 
-Owns:
+## 17. Security And Privacy
 
-- `src/canvas/collect/active-page.ts`
-- `src/canvas/collect/link-discovery.ts`
-- `src/canvas/collect/fetch-canvas-page.ts`
-- SSO/redirect detection
+- Treat all Canvas course data as sensitive.
+- Do not send Canvas cookies, access tokens, or Authorization headers to the backend.
+- Reject backend requests that include credential-bearing headers on sync and generation endpoints.
+- Do not log raw prompts, Canvas bodies, file bytes, signed URLs, cookies, credentials, or full request payloads.
+- Store raw Canvas-native bodies only transiently for Markdown upload; do not persist them locally after upload.
+- Store file bytes only transiently during backend upload to OpenAI; discard immediately after upload.
+- Do not index external websites in v1.
+- Do not index student discussion replies in v1.
+- Provide a visible clear-index action.
+- Keep backend CORS permissive only for local development; production/hosted mode must restrict origins.
 
-### Agent C: Parsers
+## 18. Failure Modes
 
-Owns:
+### 18.1 Canvas Collection Partial Failure
 
-- `src/canvas/parse/*`
-- Redacted fixtures
-- Parser unit tests
+If some Canvas categories fail, the extension still sends available materials and records collection errors.
 
-### Agent D: Cache And Data Model
+The answer may proceed with warnings when indexed materials are usable.
 
-Owns:
+### 18.2 OpenAI Vector Store Creation Failure
 
-- `src/canvas/cache/*`
-- Dexie schema additions
-- TTL expiration
-- cache clear UI hooks
+Return a clear setup error. Do not record consent as successful indexing. Preserve the student's prompt so retry is possible.
 
-### Agent E: Retrieval And Prompting
+### 18.3 Upload Failure
 
-Owns:
+Record per-material failures. Continue with other materials.
 
-- `src/canvas/retrieval/*`
-- `src/canvas/prompt/*`
-- citation extraction
-- prompt tests
+### 18.4 Indexing Timeout
 
-### Agent F: Chat Mode Integration
+Return partial status if at least one useful material is indexed. If nothing useful is indexed, show failure and allow retry.
 
-Owns:
+### 18.5 Citation Mapping Failure
 
-- `src/canvas/chat/canvasChatMode.ts`
-- routing from existing chat hooks
-- streaming integration
-- source metadata propagation
+If OpenAI returns a file ID not present in SQLite, omit that citation from UI source chips and add a backend warning. Do not invent source metadata.
 
-### Agent G: UI
+### 18.6 Remote Delete Failure
 
-Owns:
+Delete local rows only after remote deletion succeeds or record a cleanup-required warning. The UI must surface that remote cleanup may need retry.
 
-- Canvas side-panel indicators
-- context scope selector
-- source chips
-- collection status
-- cloud provider warning
-- cache settings page
+## 19. Performance And Cost Controls
 
-### Agent H: QA And Privacy Hardening
+- Do not sync until first prompt and consent.
+- Deduplicate before sync.
+- Skip unchanged materials by `contentHash` and Canvas update timestamp.
+- Use one Markdown file per Canvas-native material for citation quality, but attach them in batches for efficiency.
+- Use vector store file batches up to OpenAI's batch limit.
+- Pre-filter unsupported and oversized files before upload.
+- Keep vector stores alive for 7 inactive days to avoid re-indexing on repeat study sessions.
+- Do not delete vector stores immediately after each prompt.
+- Include pending/skipped file warnings instead of blocking all answers on slow file ingestion.
 
-Owns:
+## 20. Implementation Milestones
 
-- sensitive content filters
-- quiz exclusion
-- manual QA checklist
-- production logging cleanup
-- security review
+### Milestone 1: Backend Catalog And OpenAI Vector Store Manager
 
-## 27. Open Product Decisions
+- Add OpenAI dependency.
+- Add SQLite initialization and repository helpers.
+- Add course key hashing and local profile/user isolation.
+- Add vector store create/retrieve/delete helpers.
+- Add file upload and vector store batch attach helpers.
 
-- Should the MVP allow current module collection, or only current page plus recently viewed pages?
-- What is the default cache TTL: session-only, 24 hours, or 7 days?
-- Should student discussion replies be completely excluded or user-toggleable?
-- Which Canvas domains are supported initially: exact school domain only or any `*.instructure.com`?
-- Should the extension support cloud providers at launch or local-only first?
-- What maximum file size/page count is acceptable for Canvas PDFs?
-- Should users be able to inspect context snippets before sending every question?
+### Milestone 2: Manifest Normalization And Sync Planning
 
-## 28. Recommended MVP Defaults
+- Normalize collected Canvas materials into stable material keys.
+- Deduplicate materials and preserve placements.
+- Compute content hashes for Canvas-native materials.
+- Compare manifest against SQLite.
+- Return sync plan and warnings.
 
-- Context scope: current page only.
-- Recently viewed cache: enabled, cleaned chunks only, 24-hour TTL.
-- Course cache builder: disabled until Phase 3 or Phase 4.
-- Student discussion replies: excluded.
-- Quiz attempts: excluded.
-- Raw HTML persistence: disabled.
-- Cloud models: allowed only with visible warning.
-- Local models: recommended default.
-- Max prompt context: 8 chunks or model-aware token budget.
-- Source citations: required.
+### Milestone 3: Staged Indexing
 
+- Serialize Canvas-native materials to Markdown.
+- Upload Markdown files first.
+- Resolve and upload supported Canvas files.
+- Poll vector store file/batch statuses.
+- Store per-material success, pending, skipped, and failure states.
+
+### Milestone 4: File Search Answer Endpoint
+
+- Resolve `vector_store_id` by course identity.
+- Call Responses API with `file_search`.
+- Filter by active generation when possible.
+- Include File Search results for citation/debug metadata.
+- Map OpenAI file IDs to Canvas metadata.
+- Return non-streaming answer JSON.
+
+### Milestone 5: Extension UX
+
+- Add prompt/answer UI.
+- Add per-course consent dialog.
+- Add indexing progress/status UI.
+- Add citation chips and warnings.
+- Add clear-index control.
+
+### Milestone 6: Cleanup And Hardening
+
+- Implement full clear-index deletion.
+- Add retention cleanup hooks.
+- Add request validation and credential-header rejection.
+- Add sensitive-log safeguards.
+- Add tests and update README/backend run instructions if commands change.
+
+## 21. Test Plan
+
+### 21.1 Backend Unit Tests
+
+- Creates a course row and vector store ID for a new user/course key.
+- Reuses an existing vector store ID for unchanged course identity.
+- Differentiates same Canvas course across different Canvas users/local profiles.
+- Computes sync plans with new, changed, unchanged, stale, skipped, and failed materials.
+- Deduplicates duplicate files/links while preserving placements.
+- Serializes Canvas-native records into Markdown.
+- Skips files over 60 MB.
+- Skips unsupported file types before upload.
+- Uses batch attach for large material sets.
+- Records partial failures without failing the full sync.
+- Maps OpenAI file IDs to Canvas citation metadata.
+- Rejects sync/generation requests containing Cookie or Authorization headers.
+- Full delete calls remote delete helpers and removes local rows.
+
+### 21.2 Extension Tests
+
+- Non-Canvas pages cannot collect or index.
+- Canvas course pages collect a deduplicated manifest.
+- Current-user/profile data is included when available.
+- First prompt requests consent before backend sync.
+- Canceling consent does not create/upload/index materials.
+- Consent accepted starts staged indexing.
+- Partial indexing shows warnings and still allows answer generation.
+- Citation chips render title, type, Canvas URL, and module placement.
+- Clear-index action calls delete endpoint and resets UI state.
+
+### 21.3 Manual Verification
+
+- Course with hundreds of links/materials deduplicates correctly.
+- Course with many files uses staged indexing and stays responsive.
+- Course with inaccessible Canvas categories still indexes available materials.
+- Course with unsupported/oversized files reports useful warnings.
+- Repeat prompt after first indexing reuses the stored vector store.
+- Repeat session within 7 days avoids re-uploading unchanged materials.
+- Clearing a course index removes remote and local state.
+
+### 21.4 Required Commands
+
+Run after implementation changes:
+
+```bash
+npm run typecheck
+npm run build
+```
+
+Backend tests should be added and run with the selected Python test runner once introduced.
+
+## 22. Environment Variables
+
+Required:
+
+```text
+OPENAI_API_KEY
+OPENAI_RESPONSE_MODEL
+```
+
+Optional:
+
+```text
+CANVASGPT_DB_PATH
+CANVASGPT_INDEX_RETENTION_DAYS=7
+CANVASGPT_MAX_FILE_BYTES=62914560
+CANVASGPT_LOG_LEVEL
+```
+
+Do not commit `.env` files or API keys.
+
+## 23. References
+
+- OpenAI File Search guide: https://developers.openai.com/api/docs/guides/tools-file-search
+- OpenAI Retrieval and vector stores guide: https://developers.openai.com/api/docs/guides/retrieval

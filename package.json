@@ -1,0 +1,26 @@
+{
+  "name": "canvasgpt",
+  "version": "1.0.0",
+  "description": "List Canvas course materials for the currently open course.",
+  "main": "background.js",
+  "scripts": {
+    "build": "npm run typecheck && vite build",
+    "dev": "vite build --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^25.9.0",
+    "esbuild": "^0.21.5",
+    "typescript": "^6.0.3",
+    "vite": "^5.4.21",
+    "vitest": "^2.1.9"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.7",
+    "markdown-it": "^14.2.0"
+  }
+}

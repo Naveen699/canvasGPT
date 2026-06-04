@@ -1,21 +1,12 @@
 const status = document.getElementById("status");
 const pageContext = document.getElementById("pageContext");
-const collectPageBtn = document.getElementById("collectPageBtn");
 const loadMaterialsBtn = document.getElementById("loadMaterialsBtn");
 const summary = document.getElementById("summary");
 const materialsList = document.getElementById("materialsList");
-const domainForm = document.getElementById("domainForm");
-const domainInput = document.getElementById("domainInput");
-const domainList = document.getElementById("domainList");
-const collectedPage = document.getElementById("collectedPage");
-const collectedPageTitle = document.getElementById("collectedPageTitle");
-const collectedPageMeta = document.getElementById("collectedPageMeta");
-const collectedPageText = document.getElementById("collectedPageText");
 
 let activeTabIsCanvas = false;
 
 function setBusy(isBusy) {
-  collectPageBtn.disabled = isBusy || !activeTabIsCanvas;
   loadMaterialsBtn.disabled = isBusy || !activeTabIsCanvas;
 }
 
@@ -50,11 +41,6 @@ function formatRouteLabel(routeInfo) {
   return `${courseLabel} - ${routeInfo.route.replaceAll("_", " ")}`;
 }
 
-function renderDomainList(domains = [], defaultDomains = CanvasDetection.getDefaultCanvasDomainPatterns()) {
-  const configuredText = domains.length ? domains.join(", ") : "none";
-  domainList.textContent = `Configured: ${configuredText}. Defaults: ${defaultDomains.join(", ")}.`;
-}
-
 async function refreshCanvasContext() {
   try {
     const context = await sendRuntimeMessage({
@@ -65,11 +51,10 @@ async function refreshCanvasContext() {
     pageContext.textContent = activeTabIsCanvas
       ? `${formatRouteLabel(context.routeInfo)}. ${context.title || context.url}`
       : "Open a Canvas course page to use Canvas context.";
-    renderDomainList(context.configuredDomains || [], context.defaultDomains || []);
     setStatus(
       activeTabIsCanvas
-        ? "Canvas page detected. Ready to load visible course materials."
-        : "Open a Canvas course page, then load visible materials."
+        ? "Canvas page detected. Ready to collect course materials."
+        : "Open a Canvas course page, then collect course materials."
     );
   } catch (error) {
     activeTabIsCanvas = false;
@@ -131,24 +116,6 @@ function renderSummary(data) {
       createTextElement("p", "error-text", `Some endpoints were unavailable: ${data.unavailable.join(", ")}`)
     );
   }
-}
-
-function renderCollectedPage(data) {
-  const page = data.page || data;
-  const textLength = page.text?.length || 0;
-  const rawHtmlNote = page.rawHtmlLifecycle === "transient"
-    ? `Raw HTML parsed transiently and discarded (${page.rawHtmlBytes || 0} bytes).`
-    : "Raw HTML lifecycle unknown.";
-
-  collectedPage.hidden = false;
-  collectedPageTitle.textContent = page.title || "Untitled Canvas page";
-  collectedPageMeta.textContent = [
-    page.contentType || "unknown content type",
-    page.url || "",
-    `${textLength} text characters`,
-    rawHtmlNote
-  ].filter(Boolean).join(" - ");
-  collectedPageText.textContent = page.text || "No visible text was found on this page.";
 }
 
 function renderMaterialItem(material) {
@@ -220,7 +187,7 @@ function renderMaterials(data) {
 
 loadMaterialsBtn.addEventListener("click", async () => {
   setBusy(true);
-  setStatus("Loading student-visible course materials from Canvas...");
+  setStatus("Collecting course materials from Canvas...");
 
   try {
     const data = await sendRuntimeMessage({
@@ -229,59 +196,14 @@ loadMaterialsBtn.addEventListener("click", async () => {
 
     renderSummary(data);
     renderMaterials(data);
-    setStatus("Visible course materials loaded.");
+    setStatus("Course materials collected.");
   } catch (error) {
     summary.hidden = true;
     clearElement(materialsList);
     materialsList.append(createTextElement("p", "error-text", error.message));
-    setStatus("Could not load visible course materials.");
+    setStatus("Could not collect course materials.");
   } finally {
     setBusy(false);
-  }
-});
-
-collectPageBtn.addEventListener("click", async () => {
-  setBusy(true);
-  setStatus(
-    CanvasCollectionStatus.createStatus(CanvasCollectionStatus.STATES.collecting).message
-  );
-
-  try {
-    const data = await sendRuntimeMessage({
-      type: CanvasCollectTypes.ACTIVE_PAGE_CONTEXT_MESSAGE
-    });
-
-    renderCollectedPage(data);
-    setStatus(data.status?.message || "Current Canvas page collected.");
-  } catch (error) {
-    collectedPage.hidden = true;
-    setStatus(error.message || "Could not collect the current Canvas page.");
-  } finally {
-    setBusy(false);
-  }
-});
-
-domainForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-
-  const domain = domainInput.value.trim();
-  if (!domain) {
-    return;
-  }
-
-  setStatus("Saving Canvas domain...");
-
-  try {
-    const domains = await sendRuntimeMessage({
-      type: "ADD_CANVAS_DOMAIN",
-      domain
-    });
-
-    domainInput.value = "";
-    renderDomainList(domains);
-    await refreshCanvasContext();
-  } catch (error) {
-    setStatus(error.message);
   }
 });
 

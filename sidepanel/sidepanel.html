@@ -10,12 +10,20 @@
     <main class="app">
       <header>
         <p class="eyebrow">Canvas AI Assistant</p>
-        <h1>Visible Course Materials</h1>
+        <h1>Course Materials</h1>
       </header>
 
+      <section class="prompt-card" aria-label="Prompt">
+        <textarea
+          id="semanticPrompt"
+          rows="4"
+          placeholder="Ask about your course materials..."
+          aria-label="Prompt"
+        ></textarea>
+      </section>
+
       <section class="actions" aria-label="Course material actions">
-        <button id="collectPageBtn" type="button">Collect Current Page</button>
-        <button id="loadMaterialsBtn" type="button">Load Visible Course Materials</button>
+        <button id="loadMaterialsBtn" type="button">Collect Course Materials</button>
       </section>
 
       <section class="status-card" aria-label="Canvas page">
@@ -25,33 +33,10 @@
 
       <section class="status-card" aria-live="polite">
         <h2>Status</h2>
-        <p id="status">Open a Canvas course page, then load visible materials.</p>
-      </section>
-
-      <section class="settings-card" aria-label="Canvas domain settings">
-        <h2>Canvas Domains</h2>
-        <p id="domainHelp">Default: *.instructure.com, canvas.case.edu</p>
-        <form id="domainForm" class="domain-form">
-          <input
-            id="domainInput"
-            type="text"
-            autocomplete="off"
-            placeholder="school.instructure.com"
-            aria-label="Canvas domain"
-          />
-          <button id="addDomainBtn" type="submit">Add Domain</button>
-        </form>
-        <p id="domainList" class="domain-list"></p>
+        <p id="status">Open a Canvas course page, then collect course materials.</p>
       </section>
 
       <section class="summary-card" id="summary" hidden></section>
-
-      <section class="status-card" id="collectedPage" aria-label="Collected current page" hidden>
-        <h2>Collected Page</h2>
-        <p id="collectedPageTitle"></p>
-        <p id="collectedPageMeta" class="page-meta"></p>
-        <p id="collectedPageText" class="page-preview"></p>
-      </section>
 
       <section class="materials-section">
         <h2>Materials</h2>
@@ -63,8 +48,6 @@
 
     <script src="../canvas/detect.js"></script>
     <script src="../settings/canvas-domains.js"></script>
-    <script src="../canvas/collect/types.js"></script>
-    <script src="../canvas/collect/status.js"></script>
     <script src="sidepanel.js"></script>
   </body>
 </html>
