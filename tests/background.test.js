@@ -203,4 +203,35 @@ describe("background course material identity fallback", () => {
     });
     expect(JSON.parse(requests[0].options.body)).toEqual({ manifest });
   });
+
+  it("posts vector store setup requests to the local backend", async () => {
+    const requests = [];
+    const helpers = loadBackgroundIdentityHelpers("local_profile_abc", async (url, options) => {
+      requests.push({ url, options });
+
+      return {
+        ok: true,
+        json: async () => ({
+          courseIndexId: "course_abc",
+          vectorStoreId: "vs_abc",
+          vectorStoreStatus: "pending",
+          action: "created",
+          expiresAt: "2026-06-16T12:00:00+00:00",
+          lastActiveAt: "2026-06-09T12:00:00+00:00"
+        })
+      };
+    });
+
+    await expect(helpers.setupCourseVectorStore("course_abc", true)).resolves.toMatchObject({
+      vectorStoreId: "vs_abc",
+      action: "created"
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe("http://localhost:8000/course-index/vector-store");
+    expect(requests[0].options.method).toBe("POST");
+    expect(JSON.parse(requests[0].options.body)).toEqual({
+      courseIndexId: "course_abc",
+      consentGranted: true
+    });
+  });
 });

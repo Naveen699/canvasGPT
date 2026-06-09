@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.openai_client import VectorStore
+
 
 ENV_VARS = (
     "OPENAI_API_KEY",
@@ -836,6 +838,163 @@ def test_consent_returns_not_found_for_unknown_course_index(
         )
 
     assert response.status_code == 404
+
+
+def test_vector_store_endpoint_grants_consent_and_creates_vector_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main, db_path = _import_main(tmp_path, monkeypatch)
+    fake_openai = RouteFakeOpenAIClient()
+
+    with TestClient(main.app) as client:
+        main.app.state.openai_client_factory = lambda _config: fake_openai
+        prepare_response = client.post(
+            "/course-index/prepare",
+            json={
+                "canvasOrigin": "https://student.canvas.example.edu",
+                "courseId": "biology-101",
+                "courseName": "Biology 101",
+                "canvasUserId": "student@example.edu",
+                "manifest": {"materials": [], "placements": []},
+            },
+        )
+        course_index_id = prepare_response.json()["courseIndexId"]
+        vector_store_response = client.post(
+            "/course-index/vector-store",
+            json={"courseIndexId": course_index_id, "consentGranted": True},
+        )
+
+    assert vector_store_response.status_code == 200
+    assert vector_store_response.json()["courseIndexId"] == course_index_id
+    assert vector_store_response.json()["vectorStoreId"] == "vs_route_created"
+    assert vector_store_response.json()["vectorStoreStatus"] == "pending"
+    assert vector_store_response.json()["action"] == "created"
+    assert fake_openai.create_vector_store_calls == [
+        {
+            "name": fake_openai.create_vector_store_calls[0]["name"],
+            "expires_after_days": 7,
+            "metadata": {"course_index_id": course_index_id},
+        }
+    ]
+    created_name = fake_openai.create_vector_store_calls[0]["name"]
+    assert "student.canvas.example.edu" not in created_name
+    assert "student@example.edu" not in created_name
+    assert "Biology 101" not in created_name
+
+    with sqlite3.connect(db_path) as connection:
+        course = connection.execute(
+            """
+            SELECT consent_granted, vector_store_id, sync_status, expires_at, last_active_at
+            FROM courses
+            WHERE id = ?
+            """,
+            (course_index_id,),
+        ).fetchone()
+
+    assert course[0] == 1
+    assert course[1] == "vs_route_created"
+    assert course[2] == "pending"
+    assert course[3] is not None
+    assert course[4] is not None
+
+
+def test_vector_store_endpoint_reuses_existing_vector_store_without_openai_create(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main, db_path = _import_main(tmp_path, monkeypatch)
+    fake_openai = RouteFakeOpenAIClient()
+
+    with TestClient(main.app) as client:
+        main.app.state.openai_client_factory = lambda _config: fake_openai
+        prepare_response = client.post(
+            "/course-index/prepare",
+            json={
+                "canvasOrigin": "https://canvas.example.edu",
+                "courseId": "12345",
+                "localProfileId": "profile_abc",
+                "manifest": {"materials": [], "placements": []},
+            },
+        )
+        course_index_id = prepare_response.json()["courseIndexId"]
+        client.post(
+            "/course-index/consent",
+            json={"courseIndexId": course_index_id, "granted": True},
+        )
+        with sqlite3.connect(db_path) as connection:
+            connection.execute(
+                """
+                UPDATE courses
+                SET vector_store_id = ?, sync_status = ?, expires_at = ?
+                WHERE id = ?
+                """,
+                (
+                    "vs_existing",
+                    "ready",
+                    "2026-06-16T12:00:00+00:00",
+                    course_index_id,
+                ),
+            )
+        vector_store_response = client.post(
+            "/course-index/vector-store",
+            json={"courseIndexId": course_index_id},
+        )
+
+    assert vector_store_response.status_code == 200
+    assert vector_store_response.json()["vectorStoreId"] == "vs_existing"
+    assert vector_store_response.json()["vectorStoreStatus"] == "ready"
+    assert vector_store_response.json()["action"] == "reused"
+    assert fake_openai.create_vector_store_calls == []
+
+
+def test_vector_store_endpoint_denies_missing_consent_without_openai_create(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main, _db_path = _import_main(tmp_path, monkeypatch)
+    fake_openai = RouteFakeOpenAIClient()
+
+    with TestClient(main.app) as client:
+        main.app.state.openai_client_factory = lambda _config: fake_openai
+        prepare_response = client.post(
+            "/course-index/prepare",
+            json={
+                "canvasOrigin": "https://canvas.example.edu",
+                "courseId": "12345",
+                "localProfileId": "profile_abc",
+                "manifest": {"materials": [], "placements": []},
+            },
+        )
+        course_index_id = prepare_response.json()["courseIndexId"]
+        vector_store_response = client.post(
+            "/course-index/vector-store",
+            json={"courseIndexId": course_index_id},
+        )
+
+    assert vector_store_response.status_code == 409
+    assert "consent" in vector_store_response.json()["detail"]
+    assert fake_openai.create_vector_store_calls == []
+
+
+class RouteFakeOpenAIClient:
+    def __init__(self) -> None:
+        self.create_vector_store_calls: list[dict[str, object]] = []
+
+    def create_vector_store(
+        self,
+        name: str,
+        expires_after_days: int,
+        metadata: dict[str, str],
+    ) -> VectorStore:
+        self.create_vector_store_calls.append(
+            {
+                "name": name,
+                "expires_after_days": expires_after_days,
+                "metadata": dict(metadata),
+            }
+        )
+        return VectorStore(id="vs_route_created", name=name, status="in_progress")
 
 
 def _import_main(

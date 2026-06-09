@@ -1,6 +1,7 @@
 const BACKEND_BASE_URL = "http://localhost:8000";
 const BACKEND_EXTRACT_URL = `${BACKEND_BASE_URL}/extract`;
 const BACKEND_COURSE_INDEX_PREPARE_URL = `${BACKEND_BASE_URL}/course-index/prepare`;
+const BACKEND_COURSE_INDEX_VECTOR_STORE_URL = `${BACKEND_BASE_URL}/course-index/vector-store`;
 const CONTENT_SCRIPT_FILES = [
   "canvas/detect.js",
   "content/manifestUrl.js",
@@ -219,6 +220,31 @@ async function prepareCourseIndex(manifest) {
   return response.json();
 }
 
+async function setupCourseVectorStore(courseIndexId, consentGranted = true) {
+  if (!courseIndexId) {
+    throw new Error("Collect course materials before creating a vector store.");
+  }
+
+  const response = await fetch(BACKEND_COURSE_INDEX_VECTOR_STORE_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      courseIndexId,
+      consentGranted
+    })
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data?.detail || `Vector store setup returned ${response.status}.`);
+  }
+
+  return data;
+}
+
 async function createCourseCollectionMessage(type) {
   const localProfileId = await globalThis.CanvasLocalProfileSettings.getOrCreateLocalProfileId();
 
@@ -254,7 +280,8 @@ async function getActiveCourseMaterials() {
 if (globalThis.__CANVASGPT_TEST__) {
   globalThis.CanvasGptBackground = {
     createCourseCollectionMessage,
-    prepareCourseIndex
+    prepareCourseIndex,
+    setupCourseVectorStore
   };
 }
 
@@ -346,6 +373,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "GET_ACTIVE_COURSE_MANIFEST") {
     getActiveCourseManifest()
+      .then((data) => sendResponse({ success: true, data }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+
+    return true;
+  }
+
+  if (message.type === "SETUP_COURSE_VECTOR_STORE") {
+    setupCourseVectorStore(message.courseIndexId, message.consentGranted !== false)
       .then((data) => sendResponse({ success: true, data }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
 

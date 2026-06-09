@@ -237,6 +237,24 @@ class CourseIndexConsentResponse(CourseIndexBaseModel):
     consent_granted: bool = Field(alias="consentGranted")
 
 
+class CourseIndexVectorStoreRequest(CourseIndexBaseModel):
+    course_index_id: str = Field(alias="courseIndexId", min_length=1)
+    consent_granted: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices("consentGranted", "granted"),
+        serialization_alias="consentGranted",
+    )
+
+
+class CourseIndexVectorStoreResponse(CourseIndexBaseModel):
+    course_index_id: str = Field(alias="courseIndexId")
+    vector_store_id: str = Field(alias="vectorStoreId")
+    vector_store_status: VectorStoreStatus = Field(alias="vectorStoreStatus")
+    action: str
+    expires_at: str | None = Field(default=None, alias="expiresAt")
+    last_active_at: str | None = Field(default=None, alias="lastActiveAt")
+
+
 def _compact(value: str | None) -> str | None:
     if value is None:
         return None

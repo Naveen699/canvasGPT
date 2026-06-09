@@ -378,6 +378,96 @@ def test_set_consent_state_updates_course_consent(tmp_path: Path) -> None:
     assert revoked_course["updated_at"] != granted_course["updated_at"]
 
 
+def test_update_course_vector_store_sets_remote_pointer_and_activity(
+    tmp_path: Path,
+) -> None:
+    clock = MutableClock()
+    repository = _repository(tmp_path, clock)
+    course = repository.get_or_create_course(
+        canvas_origin="https://canvas.example.edu",
+        course_id="12345",
+        canvas_user_id="67890",
+    )
+    expires_at = "2026-06-16T12:00:00+00:00"
+
+    clock.advance()
+    updated_course = repository.update_course_vector_store(
+        course_id=course["id"],
+        vector_store_id="vs_abc123",
+        expires_at=expires_at,
+        sync_status="pending",
+    )
+
+    assert updated_course["vector_store_id"] == "vs_abc123"
+    assert updated_course["expires_at"] == expires_at
+    assert updated_course["sync_status"] == "pending"
+    assert updated_course["last_active_at"] == updated_course["updated_at"]
+    assert updated_course["last_active_at"] != course["last_active_at"]
+    assert updated_course["last_synced_at"] is None
+
+
+def test_set_active_generation_and_mark_course_sync_status_update_course_state(
+    tmp_path: Path,
+) -> None:
+    clock = MutableClock()
+    repository = _repository(tmp_path, clock)
+    course = repository.get_or_create_course(
+        canvas_origin="https://canvas.example.edu",
+        course_id="12345",
+        canvas_user_id="67890",
+    )
+
+    clock.advance()
+    generation_course = repository.set_active_generation(
+        course_id=course["id"],
+        generation_id="sync_2026_06_09",
+        sync_status="indexing",
+    )
+    clock.advance()
+    synced_course = repository.mark_course_sync_status(
+        course_id=course["id"],
+        sync_status="ready",
+        last_synced_at="2026-06-09T12:02:00+00:00",
+    )
+    clock.advance()
+    partial_course = repository.mark_course_sync_status(
+        course_id=course["id"],
+        sync_status="partial",
+    )
+
+    assert generation_course["active_generation_id"] == "sync_2026_06_09"
+    assert generation_course["sync_status"] == "indexing"
+    assert synced_course["sync_status"] == "ready"
+    assert synced_course["last_synced_at"] == "2026-06-09T12:02:00+00:00"
+    assert partial_course["sync_status"] == "partial"
+    assert partial_course["last_synced_at"] == synced_course["last_synced_at"]
+    assert partial_course["updated_at"] != synced_course["updated_at"]
+
+
+def test_mark_vector_store_setup_failed_records_failure_without_success_state(
+    tmp_path: Path,
+) -> None:
+    clock = MutableClock()
+    repository = _repository(tmp_path, clock)
+    course = repository.get_or_create_course(
+        canvas_origin="https://canvas.example.edu",
+        course_id="12345",
+        canvas_user_id="67890",
+    )
+
+    clock.advance()
+    failed_course = repository.mark_vector_store_setup_failed(
+        course_id=course["id"],
+        generation_id="sync_failed",
+    )
+
+    assert failed_course["active_generation_id"] == "sync_failed"
+    assert failed_course["sync_status"] == "failed"
+    assert failed_course["vector_store_id"] is None
+    assert failed_course["last_synced_at"] is None
+    assert failed_course["updated_at"] != course["updated_at"]
+
+
 def test_mark_materials_skipped_updates_existing_materials_only(
     tmp_path: Path,
 ) -> None:

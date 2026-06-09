@@ -5,6 +5,7 @@ from backend.catalog.identity import (
 )
 from backend.catalog.repository import CatalogRepository
 from backend.catalog.schema import initialize_schema
+from backend.catalog.vector_store_names import build_vector_store_name
 
 
 __all__ = [
@@ -12,5 +13,6 @@ __all__ = [
     "CourseIdentity",
     "CourseIdentityError",
     "build_course_identity",
+    "build_vector_store_name",
     "initialize_schema",
 ]

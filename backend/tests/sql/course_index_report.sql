@@ -7,7 +7,7 @@
 .headers on
 .mode column
 .nullvalue NULL
-.width 39 23 9 40 14 16 15 13 29 12 32 32
+.width 39 23 9 40 14 16 15 13 20 22 29 12 32 32 32
 
 .print '== Latest Course Summary =='
 WITH latest_course AS (
@@ -28,12 +28,34 @@ SELECT
     WHEN consent_granted = 1 THEN 'granted'
     ELSE 'not_granted'
   END AS consent_state,
+  vector_store_id,
+  expires_at,
   CASE
     WHEN consent_granted = 1 AND vector_store_id IS NOT NULL THEN 'ready'
     ELSE 'not_created'
   END AS effective_vector_store_status,
   sync_status,
+  last_active_at,
   created_at,
+  updated_at
+FROM courses
+WHERE id = (SELECT id FROM latest_course);
+
+.print ''
+.print '== Latest Vector Store State =='
+.width 39 24 16 32 32 32
+WITH latest_course AS (
+  SELECT id
+  FROM courses
+  ORDER BY updated_at DESC
+  LIMIT 1
+)
+SELECT
+  id AS course_index_id,
+  COALESCE(vector_store_id, 'NULL') AS vector_store_id,
+  sync_status,
+  COALESCE(last_active_at, 'NULL') AS last_active_at,
+  COALESCE(expires_at, 'NULL') AS expires_at,
   updated_at
 FROM courses
 WHERE id = (SELECT id FROM latest_course);
@@ -297,18 +319,19 @@ checks AS (
   UNION ALL
 
   SELECT
-    'no_remote_index_created_by_prepare',
+    'remote_index_requires_consent',
     CASE
       WHEN NOT EXISTS (
         SELECT 1
         FROM courses
         WHERE id = (SELECT id FROM latest_course)
           AND vector_store_id IS NOT NULL
+          AND consent_granted != 1
       )
       THEN 'PASS'
       ELSE 'FAIL'
     END,
-    'vector_store_id should remain NULL after prepare-only storage'
+    'vector_store_id may exist only after consented lifecycle setup'
 
   UNION ALL
 

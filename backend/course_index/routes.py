@@ -15,9 +15,16 @@ from backend.course_index.models import (
     CourseIndexPrepareResponse,
     CourseIndexSkippedMaterial,
     CourseIndexSyncPlan,
+    CourseIndexVectorStoreRequest,
+    CourseIndexVectorStoreResponse,
     CourseIndexWarning,
 )
 from backend.course_index.sync_plan import build_sync_plan
+from backend.course_index.vector_store_lifecycle import (
+    VectorStoreLifecycleError,
+    ensure_course_vector_store,
+)
+from backend.openai_client import OpenAIClient, OpenAIClientSettings
 
 
 router = APIRouter(prefix="/course-index", tags=["course-index"])
@@ -201,8 +208,84 @@ def set_course_index_consent(
     )
 
 
+@router.post(
+    "/vector-store",
+    response_model=CourseIndexVectorStoreResponse,
+    response_model_by_alias=True,
+)
+def ensure_course_index_vector_store(
+    payload: CourseIndexVectorStoreRequest,
+    request: Request,
+) -> CourseIndexVectorStoreResponse:
+    course_index_id = _compact(payload.course_index_id)
+    if not course_index_id:
+        raise HTTPException(
+            status_code=422,
+            detail="courseIndexId is required",
+        )
+
+    repository = _repository_from_request(request)
+    course = repository.get_course_by_id(course_index_id)
+    if course is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Course index not found",
+        )
+
+    if payload.consent_granted is not None:
+        course = _set_consent_state(
+            repository,
+            course_index_id,
+            granted=payload.consent_granted,
+        )
+
+    try:
+        result = ensure_course_vector_store(
+            repository=repository,
+            openai_client=_openai_client_from_request(request),
+            config=request.app.state.config,
+            course_index_id=course["id"],
+        )
+    except VectorStoreLifecycleError as exc:
+        if exc.code == "course_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=exc.message,
+            ) from exc
+
+        if exc.code == "consent_required":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=exc.message,
+            ) from exc
+
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=exc.message,
+        ) from exc
+
+    return CourseIndexVectorStoreResponse(
+        courseIndexId=result.course["id"],
+        vectorStoreId=result.vector_store_id,
+        vectorStoreStatus=_vector_store_status(result.course),
+        action=result.status,
+        expiresAt=result.course.get("expires_at"),
+        lastActiveAt=result.course.get("last_active_at"),
+    )
+
+
 def _repository_from_request(request: Request) -> CatalogRepository:
     return CatalogRepository(request.app.state.config.db_path)
+
+
+def _openai_client_from_request(request: Request):
+    factory = getattr(request.app.state, "openai_client_factory", None)
+    if callable(factory):
+        return factory(request.app.state.config)
+
+    return OpenAIClient(
+        OpenAIClientSettings(api_key=request.app.state.config.openai_api_key)
+    )
 
 
 def _list_materials_by_course(

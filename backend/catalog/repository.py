@@ -492,6 +492,121 @@ class CatalogRepository:
             )
             return _select_course_by_id(connection, course_id)
 
+    def update_course_vector_store(
+        self,
+        *,
+        course_id: str,
+        vector_store_id: str,
+        expires_at: str | None,
+        sync_status: str = "pending",
+    ) -> CatalogRow:
+        timestamp = self._timestamp()
+
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE courses
+                SET
+                    vector_store_id = ?,
+                    last_active_at = ?,
+                    expires_at = ?,
+                    sync_status = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    _required_text(vector_store_id, "vector_store_id"),
+                    timestamp,
+                    _optional_text(expires_at),
+                    _required_text(sync_status, "sync_status"),
+                    timestamp,
+                    course_id,
+                ),
+            )
+            return _select_course_by_id(connection, course_id)
+
+    def set_active_generation(
+        self,
+        *,
+        course_id: str,
+        generation_id: str,
+        sync_status: str = "pending",
+    ) -> CatalogRow:
+        timestamp = self._timestamp()
+
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE courses
+                SET
+                    active_generation_id = ?,
+                    sync_status = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    _required_text(generation_id, "generation_id"),
+                    _required_text(sync_status, "sync_status"),
+                    timestamp,
+                    course_id,
+                ),
+            )
+            return _select_course_by_id(connection, course_id)
+
+    def mark_course_sync_status(
+        self,
+        *,
+        course_id: str,
+        sync_status: str,
+        last_synced_at: str | None = None,
+    ) -> CatalogRow:
+        timestamp = self._timestamp()
+
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE courses
+                SET
+                    sync_status = ?,
+                    last_synced_at = COALESCE(?, last_synced_at),
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    _required_text(sync_status, "sync_status"),
+                    _optional_text(last_synced_at),
+                    timestamp,
+                    course_id,
+                ),
+            )
+            return _select_course_by_id(connection, course_id)
+
+    def mark_vector_store_setup_failed(
+        self,
+        *,
+        course_id: str,
+        generation_id: str | None = None,
+    ) -> CatalogRow:
+        timestamp = self._timestamp()
+
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE courses
+                SET
+                    active_generation_id = COALESCE(?, active_generation_id),
+                    sync_status = 'failed',
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    _optional_text(generation_id),
+                    timestamp,
+                    course_id,
+                ),
+            )
+            return _select_course_by_id(connection, course_id)
+
     def mark_materials_skipped(
         self,
         *,
@@ -653,6 +768,14 @@ def _optional_text(value: object) -> str | None:
 
     normalized = str(value).strip()
     return normalized or None
+
+
+def _required_text(value: object, field_name: str) -> str:
+    normalized = _optional_text(value)
+    if normalized is None:
+        raise ValueError(f"{field_name} is required")
+
+    return normalized
 
 
 def _safe_diagnostic_text(value: object) -> str | None:

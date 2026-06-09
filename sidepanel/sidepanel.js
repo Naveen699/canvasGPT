@@ -5,6 +5,8 @@ const summary = document.getElementById("summary");
 const materialsList = document.getElementById("materialsList");
 
 let activeTabIsCanvas = false;
+let latestCourseIndex = null;
+let latestCollectionData = null;
 
 function setBusy(isBusy) {
   loadMaterialsBtn.disabled = isBusy || !activeTabIsCanvas;
@@ -235,6 +237,21 @@ function renderStorageWarnings(warnings = []) {
   return wrapper;
 }
 
+function renderVectorStoreSummary(vectorStore) {
+  if (!vectorStore?.vectorStoreId) {
+    return null;
+  }
+
+  const action = vectorStore.action === "reused" ? "reused" : "created";
+  const details = [
+    `Vector store ${action}: ${vectorStore.vectorStoreId}`,
+    vectorStore.vectorStoreStatus ? `status ${vectorStore.vectorStoreStatus}` : "",
+    vectorStore.expiresAt ? `expires ${new Date(vectorStore.expiresAt).toLocaleString()}` : ""
+  ].filter(Boolean);
+
+  return createTextElement("p", "success-text", `${details.join(" - ")}.`);
+}
+
 function renderSummary(data) {
   const manifest = getManifest(data);
   const courseIndex = getCourseIndex(data);
@@ -266,6 +283,11 @@ function renderSummary(data) {
           `${storedMessage} ${syncSummary ? `Sync plan: ${syncSummary}.` : ""}`
         )
       );
+
+      const vectorStoreSummary = renderVectorStoreSummary(courseIndex.vectorStore);
+      if (vectorStoreSummary) {
+        summary.append(vectorStoreSummary);
+      }
     }
 
     const warnings = courseIndex?.warnings || [];
@@ -431,29 +453,66 @@ function renderMaterials(data) {
   materialsList.append(renderSection("Linked Files", normalizeFiles(data.files)));
 }
 
+function setLatestCourseIndex(courseIndex) {
+  latestCourseIndex = courseIndex || null;
+}
+
 loadMaterialsBtn.addEventListener("click", async () => {
   setBusy(true);
-  setStatus("Collecting course materials from Canvas and storing them locally...");
+  latestCollectionData = null;
+  setLatestCourseIndex(null);
+  setStatus("Collecting course materials, storing them locally, and creating a vector store...");
 
   try {
     const data = await sendRuntimeMessage({
       type: "GET_ACTIVE_COURSE_MANIFEST"
     });
 
+    latestCollectionData = data;
+    setLatestCourseIndex(data.courseIndex);
     renderSummary(data);
     renderMaterials(data);
+
+    if (latestCourseIndex?.courseIndexId) {
+      setStatus("Course materials stored. Creating or reusing the course vector store...");
+      const vectorStore = await sendRuntimeMessage({
+        type: "SETUP_COURSE_VECTOR_STORE",
+        courseIndexId: latestCourseIndex.courseIndexId,
+        consentGranted: true
+      });
+
+      latestCourseIndex = {
+        ...latestCourseIndex,
+        consentGranted: true,
+        vectorStoreStatus: vectorStore.vectorStoreStatus,
+        vectorStore
+      };
+      latestCollectionData = {
+        ...latestCollectionData,
+        courseIndex: latestCourseIndex
+      };
+      renderSummary(latestCollectionData);
+    }
+
     setStatus(
-      isLocalCatalogUpToDate(data.courseIndex?.syncPlan)
+      latestCourseIndex?.vectorStore?.action === "reused"
+        ? "Course materials stored and existing vector store reused."
+        : latestCourseIndex?.vectorStore?.vectorStoreId
+        ? "Course materials stored and vector store created."
+        : isLocalCatalogUpToDate(data.courseIndex?.syncPlan)
         ? "Local catalog is already up to date."
-        : data.courseIndex?.courseIndexId
-        ? "Deduplicated course materials collected and stored locally."
-        : "Deduplicated course materials collected."
+        : "Deduplicated course materials collected and stored locally."
     );
   } catch (error) {
-    summary.hidden = true;
-    clearElement(materialsList);
-    materialsList.append(createTextElement("p", "error-text", error.message));
-    setStatus("Could not collect course materials.");
+    if (!latestCollectionData) {
+      setLatestCourseIndex(null);
+      summary.hidden = true;
+      clearElement(materialsList);
+      materialsList.append(createTextElement("p", "error-text", error.message));
+      setStatus("Could not collect course materials.");
+    } else {
+      setStatus(error.message);
+    }
   } finally {
     setBusy(false);
   }
