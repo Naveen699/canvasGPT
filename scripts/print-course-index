@@ -1,0 +1,46 @@
+#!/usr/bin/env sh
+set -eu
+
+DB_PATH="${1:-${CANVASGPT_DB_PATH:-backend/.data/canvasgpt.sqlite3}}"
+REPORT_SQL="backend/tests/sql/course_index_report.sql"
+
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  echo "sqlite3 is required to print the course index report." >&2
+  exit 127
+fi
+
+if [ ! -f "$DB_PATH" ]; then
+  echo "SQLite database not found: $DB_PATH" >&2
+  echo "Pass a DB path explicitly or set CANVASGPT_DB_PATH." >&2
+  exit 1
+fi
+
+if [ ! -f "$REPORT_SQL" ]; then
+  echo "Report SQL not found: $REPORT_SQL" >&2
+  exit 1
+fi
+
+missing_tables="$(sqlite3 -readonly "$DB_PATH" "
+  SELECT group_concat(required.name, ', ')
+  FROM (
+    SELECT 'courses' AS name
+    UNION ALL SELECT 'materials'
+    UNION ALL SELECT 'material_placements'
+  ) AS required
+  LEFT JOIN sqlite_master
+    ON sqlite_master.type = 'table'
+   AND sqlite_master.name = required.name
+  WHERE sqlite_master.name IS NULL;
+")"
+
+if [ -n "$missing_tables" ]; then
+  echo "SQLite database is missing required table(s): $missing_tables" >&2
+  echo "DB: $DB_PATH" >&2
+  exit 1
+fi
+
+echo "CanvasGPT course index report"
+echo "DB: $DB_PATH"
+echo
+
+sqlite3 -readonly "$DB_PATH" < "$REPORT_SQL"

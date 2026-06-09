@@ -161,6 +161,96 @@ def test_material_placeholder_upserts_metadata_without_changing_id(
     assert updated_material["content_hash"] == "sha256:abc"
 
 
+def test_list_materials_by_course_returns_only_that_courses_materials(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    first_course = repository.get_or_create_course(
+        canvas_origin="https://canvas.example.edu",
+        course_id="12345",
+        canvas_user_id="user_1",
+    )
+    second_course = repository.get_or_create_course(
+        canvas_origin="https://canvas.example.edu",
+        course_id="12345",
+        canvas_user_id="user_2",
+    )
+
+    repository.upsert_manifest_material_metadata(
+        course_id=first_course["id"],
+        material_key="file:2",
+        kind="file",
+        title="Second",
+    )
+    repository.upsert_manifest_material_metadata(
+        course_id=first_course["id"],
+        material_key="assignment:1",
+        kind="assignment",
+        title="First",
+    )
+    repository.upsert_manifest_material_metadata(
+        course_id=second_course["id"],
+        material_key="file:3",
+        kind="file",
+        title="Other course",
+    )
+
+    materials = repository.list_materials_by_course(course_id=first_course["id"])
+
+    assert [material["material_key"] for material in materials] == [
+        "assignment:1",
+        "file:2",
+    ]
+    assert {material["course_id"] for material in materials} == {first_course["id"]}
+
+
+def test_manifest_material_metadata_upsert_does_not_overwrite_file_ids(
+    tmp_path: Path,
+) -> None:
+    clock = MutableClock()
+    repository = _repository(tmp_path, clock)
+    course = repository.get_or_create_course(
+        canvas_origin="https://canvas.example.edu",
+        course_id="12345",
+        canvas_user_id="67890",
+    )
+    created_material = repository.upsert_material_placeholder(
+        course_id=course["id"],
+        material_key="file:123",
+        kind="file",
+        title="Old title",
+        openai_file_id="file_openai_123",
+        vector_store_file_id="vs_file_123",
+        generation_id="sync_old",
+        status="indexed",
+    )
+
+    clock.advance()
+    updated_material = repository.upsert_manifest_material_metadata(
+        course_id=course["id"],
+        material_key="file:123",
+        kind="file",
+        title="New title",
+        canvas_url="https://canvas.example.edu/courses/12345/files/123",
+        canvas_updated_at="2026-06-09T12:01:00+00:00",
+        content_hash="sha256:new",
+        size=2048,
+        content_type="application/pdf",
+        file_name="slides.pdf",
+        generation_id="sync_new",
+        status="pending",
+    )
+
+    assert updated_material["id"] == created_material["id"]
+    assert updated_material["created_at"] == created_material["created_at"]
+    assert updated_material["updated_at"] != created_material["updated_at"]
+    assert updated_material["title"] == "New title"
+    assert updated_material["content_hash"] == "sha256:new"
+    assert updated_material["openai_file_id"] == "file_openai_123"
+    assert updated_material["vector_store_file_id"] == "vs_file_123"
+    assert updated_material["generation_id"] == "sync_new"
+
+
 def test_replace_material_placements_replaces_existing_rows(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     course = repository.get_or_create_course(
@@ -198,6 +288,134 @@ def test_replace_material_placements_replaces_existing_rows(tmp_path: Path) -> N
         "New label",
         "Second label",
     ]
+
+
+def test_replace_placements_for_manifest_materials_replaces_only_manifest_keys(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    course = repository.get_or_create_course(
+        canvas_origin="https://canvas.example.edu",
+        course_id="12345",
+        local_profile_id="profile_abc",
+    )
+    repository.replace_material_placements(
+        course_id=course["id"],
+        material_key="file:1",
+        placements=[{"source_kind": "module", "position": 1, "label": "Old file 1"}],
+    )
+    repository.replace_material_placements(
+        course_id=course["id"],
+        material_key="file:2",
+        placements=[{"source_kind": "module", "position": 1, "label": "Old file 2"}],
+    )
+    repository.replace_material_placements(
+        course_id=course["id"],
+        material_key="file:3",
+        placements=[{"source_kind": "module", "position": 1, "label": "Keep file 3"}],
+    )
+
+    replaced = repository.replace_placements_for_manifest_materials(
+        course_id=course["id"],
+        placements_by_material_key={
+            "file:1": [
+                {
+                    "source_kind": "module",
+                    "module_id": "module_1",
+                    "module_name": "Week 1",
+                    "module_item_id": "item_1",
+                    "position": 2,
+                    "label": "New file 1",
+                }
+            ],
+            "file:2": [],
+        },
+    )
+
+    with repository.connect() as connection:
+        cursor = connection.execute(
+            """
+            SELECT material_key, label
+            FROM material_placements
+            WHERE course_id = ?
+            ORDER BY material_key, position, id
+            """,
+            (course["id"],),
+        )
+        stored_placements = [dict(row) for row in cursor.fetchall()]
+
+    assert [placement["label"] for placement in replaced["file:1"]] == ["New file 1"]
+    assert replaced["file:2"] == []
+    assert stored_placements == [
+        {"material_key": "file:1", "label": "New file 1"},
+        {"material_key": "file:3", "label": "Keep file 3"},
+    ]
+
+
+def test_set_consent_state_updates_course_consent(tmp_path: Path) -> None:
+    clock = MutableClock()
+    repository = _repository(tmp_path, clock)
+    course = repository.get_or_create_course(
+        canvas_origin="https://canvas.example.edu",
+        course_id="12345",
+        canvas_user_id="67890",
+    )
+
+    clock.advance()
+    granted_course = repository.set_consent_state(
+        course_id=course["id"],
+        consent_granted=True,
+    )
+    clock.advance()
+    revoked_course = repository.set_consent_state(
+        course_id=course["id"],
+        consent_granted=False,
+    )
+
+    assert granted_course["consent_granted"] == 1
+    assert granted_course["updated_at"] != course["updated_at"]
+    assert revoked_course["consent_granted"] == 0
+    assert revoked_course["updated_at"] != granted_course["updated_at"]
+
+
+def test_mark_materials_skipped_updates_existing_materials_only(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    course = repository.get_or_create_course(
+        canvas_origin="https://canvas.example.edu",
+        course_id="12345",
+        canvas_user_id="67890",
+    )
+    repository.upsert_manifest_material_metadata(
+        course_id=course["id"],
+        material_key="file:1",
+        kind="file",
+        status="pending",
+    )
+    repository.upsert_manifest_material_metadata(
+        course_id=course["id"],
+        material_key="file:2",
+        kind="file",
+        status="pending",
+    )
+
+    skipped_materials = repository.mark_materials_skipped(
+        course_id=course["id"],
+        material_keys=["file:2", "file:missing"],
+        error_type="unsupported_type",
+        error_message="raw diagnostic text",
+    )
+    materials = repository.list_materials_by_course(course_id=course["id"])
+
+    assert [material["material_key"] for material in skipped_materials] == ["file:2"]
+    assert skipped_materials[0]["status"] == "skipped"
+    assert skipped_materials[0]["error_type"] == "unsupported_type"
+    assert skipped_materials[0]["error_message"] == "[diagnostic omitted]"
+    assert {material["material_key"]: material["status"] for material in materials} == {
+        "file:1": "pending",
+        "file:2": "skipped",
+    }
 
 
 def test_create_sync_run_placeholder_uses_default_counts(tmp_path: Path) -> None:

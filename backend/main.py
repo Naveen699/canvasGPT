@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from backend.catalog import initialize_schema
 from backend.config import load_config
+from backend.course_index.routes import router as course_index_router
 from backend.logging_config import configure_logging
 
 
@@ -34,6 +35,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(course_index_router)
 
 
 class LinkData(BaseModel):

@@ -137,8 +137,107 @@ function getKindLabel(kind) {
   return labels[kind] || kind.replaceAll("_", " ");
 }
 
+function getCourseIndex(data) {
+  return data?.courseIndex || null;
+}
+
+function formatSyncPlan(syncPlan = {}) {
+  const parts = [
+    ["new", syncPlan.newCount],
+    ["changed", syncPlan.changedCount],
+    ["unchanged", syncPlan.unchangedCount],
+    ["stale", syncPlan.staleCount],
+    ["skipped", syncPlan.skippedCount]
+  ];
+
+  return parts
+    .filter(([, count]) => Number.isFinite(Number(count)))
+    .map(([label, count]) => `${Number(count)} ${label}`)
+    .join(", ");
+}
+
+function getSyncCount(syncPlan = {}, key) {
+  return Number(syncPlan[key] || 0);
+}
+
+function isLocalCatalogUpToDate(syncPlan = {}) {
+  return (
+    getSyncCount(syncPlan, "unchangedCount") > 0 &&
+    getSyncCount(syncPlan, "newCount") === 0 &&
+    getSyncCount(syncPlan, "changedCount") === 0 &&
+    getSyncCount(syncPlan, "staleCount") === 0 &&
+    getSyncCount(syncPlan, "skippedCount") === 0
+  );
+}
+
+function getWarningReason(warning) {
+  if (typeof warning === "string") {
+    return warning || "warning";
+  }
+
+  return warning?.reason || warning?.message || "warning";
+}
+
+function getWarningTitle(warning) {
+  if (!warning || typeof warning === "string") {
+    return "";
+  }
+
+  return warning.title || warning.materialKey || "";
+}
+
+function groupWarningsByReason(warnings = []) {
+  return warnings.reduce((groups, warning) => {
+    const reason = getWarningReason(warning);
+
+    if (!groups.has(reason)) {
+      groups.set(reason, {
+        reason,
+        count: 0,
+        titles: []
+      });
+    }
+
+    const group = groups.get(reason);
+    const title = getWarningTitle(warning);
+    group.count += 1;
+
+    if (title && group.titles.length < 3 && !group.titles.includes(title)) {
+      group.titles.push(title);
+    }
+
+    return groups;
+  }, new Map());
+}
+
+function renderStorageWarnings(warnings = []) {
+  if (!warnings.length) {
+    return null;
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "storage-warnings";
+  wrapper.append(createTextElement("p", "warning-text", "Storage warnings"));
+
+  const list = document.createElement("ul");
+  list.className = "warning-list";
+
+  Array.from(groupWarningsByReason(warnings).values()).forEach((group) => {
+    const item = document.createElement("li");
+    item.className = "warning-item";
+
+    const examples = group.titles.length ? ` Examples: ${group.titles.join(", ")}.` : "";
+    item.textContent = `${group.reason}: ${group.count} item${group.count === 1 ? "" : "s"}.${examples}`;
+    list.append(item);
+  });
+
+  wrapper.append(list);
+  return wrapper;
+}
+
 function renderSummary(data) {
   const manifest = getManifest(data);
+  const courseIndex = getCourseIndex(data);
 
   if (manifest) {
     const courseName = manifest.courseName || `Course ${manifest.courseId}`;
@@ -153,6 +252,26 @@ function renderSummary(data) {
         `${courseName}: ${manifest.materials.length} deduplicated materials, ${manifest.placements.length} source placements.`
       )
     );
+
+    if (courseIndex) {
+      const syncSummary = formatSyncPlan(courseIndex.syncPlan);
+      const storedMessage = isLocalCatalogUpToDate(courseIndex.syncPlan)
+        ? `Local catalog is already up to date as ${courseIndex.courseIndexId}.`
+        : `Stored locally as ${courseIndex.courseIndexId}.`;
+
+      summary.append(
+        createTextElement(
+          "p",
+          "success-text",
+          `${storedMessage} ${syncSummary ? `Sync plan: ${syncSummary}.` : ""}`
+        )
+      );
+    }
+
+    const warnings = courseIndex?.warnings || [];
+    if (warnings.length) {
+      summary.append(renderStorageWarnings(warnings));
+    }
 
     if (errors.length) {
       summary.append(
@@ -314,7 +433,7 @@ function renderMaterials(data) {
 
 loadMaterialsBtn.addEventListener("click", async () => {
   setBusy(true);
-  setStatus("Collecting course materials from Canvas...");
+  setStatus("Collecting course materials from Canvas and storing them locally...");
 
   try {
     const data = await sendRuntimeMessage({
@@ -323,7 +442,13 @@ loadMaterialsBtn.addEventListener("click", async () => {
 
     renderSummary(data);
     renderMaterials(data);
-    setStatus("Deduplicated course materials collected.");
+    setStatus(
+      isLocalCatalogUpToDate(data.courseIndex?.syncPlan)
+        ? "Local catalog is already up to date."
+        : data.courseIndex?.courseIndexId
+        ? "Deduplicated course materials collected and stored locally."
+        : "Deduplicated course materials collected."
+    );
   } catch (error) {
     summary.hidden = true;
     clearElement(materialsList);

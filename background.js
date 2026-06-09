@@ -1,4 +1,6 @@
-const BACKEND_EXTRACT_URL = "http://localhost:8000/extract";
+const BACKEND_BASE_URL = "http://localhost:8000";
+const BACKEND_EXTRACT_URL = `${BACKEND_BASE_URL}/extract`;
+const BACKEND_COURSE_INDEX_PREPARE_URL = `${BACKEND_BASE_URL}/course-index/prepare`;
 const CONTENT_SCRIPT_FILES = [
   "canvas/detect.js",
   "content/manifestUrl.js",
@@ -197,6 +199,26 @@ async function sendExtractedDataToBackend(pageData) {
   return response.json();
 }
 
+async function prepareCourseIndex(manifest) {
+  if (!manifest) {
+    throw new Error("Canvas course manifest is missing.");
+  }
+
+  const response = await fetch(BACKEND_COURSE_INDEX_PREPARE_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ manifest })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Course index prepare returned ${response.status}.`);
+  }
+
+  return response.json();
+}
+
 async function createCourseCollectionMessage(type) {
   const localProfileId = await globalThis.CanvasLocalProfileSettings.getOrCreateLocalProfileId();
 
@@ -220,12 +242,19 @@ async function getActiveCourseMaterials() {
     throw new Error(response?.error || "Failed to load Canvas course materials.");
   }
 
-  return response.data;
+  const manifest = response.data?.manifest;
+  const courseIndex = manifest ? await prepareCourseIndex(manifest) : null;
+
+  return {
+    ...response.data,
+    courseIndex
+  };
 }
 
 if (globalThis.__CANVASGPT_TEST__) {
   globalThis.CanvasGptBackground = {
-    createCourseCollectionMessage
+    createCourseCollectionMessage,
+    prepareCourseIndex
   };
 }
 
@@ -243,7 +272,13 @@ async function getActiveCourseManifest() {
     throw new Error(response?.error || "Failed to load Canvas course manifest.");
   }
 
-  return response.data;
+  const manifest = response.data;
+  const courseIndex = await prepareCourseIndex(manifest);
+
+  return {
+    manifest,
+    courseIndex
+  };
 }
 
 chrome.runtime.onInstalled.addListener(() => {

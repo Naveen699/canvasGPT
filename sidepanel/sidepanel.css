@@ -8,6 +8,8 @@
   --primary: #2563eb;
   --primary-hover: #1d4ed8;
   --danger: #b91c1c;
+  --success: #047857;
+  --warning: #a16207;
 }
 
 * {
@@ -130,7 +132,9 @@ textarea {
 .material-title,
 .material-meta,
 .empty-state,
-.error-text {
+.error-text,
+.success-text,
+.warning-text {
   margin: 0;
   color: var(--muted);
   font-size: 12px;
@@ -139,6 +143,32 @@ textarea {
 
 .error-text {
   color: var(--danger);
+}
+
+.success-text {
+  color: var(--success);
+}
+
+.warning-text {
+  color: var(--warning);
+}
+
+.storage-warnings {
+  display: grid;
+  gap: 4px;
+}
+
+.warning-list {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding-left: 16px;
+}
+
+.warning-item {
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .materials-list-inner {

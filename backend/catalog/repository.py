@@ -121,6 +121,19 @@ class CatalogRepository:
             )
             return _select_course_by_hash(connection, identity.course_key_hash)
 
+    def list_materials_by_course(self, *, course_id: str) -> list[CatalogRow]:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                SELECT *
+                FROM materials
+                WHERE course_id = ?
+                ORDER BY material_key
+                """,
+                (course_id,),
+            )
+            return [_row_to_dict(row) for row in cursor.fetchall()]
+
     def upsert_material_placeholder(
         self,
         *,
@@ -233,6 +246,110 @@ class CatalogRepository:
             )
             return _row_to_dict(cursor.fetchone())
 
+    def upsert_manifest_material_metadata(
+        self,
+        *,
+        course_id: str,
+        material_key: str,
+        kind: str,
+        title: str | None = None,
+        canvas_url: str | None = None,
+        canvas_updated_at: str | None = None,
+        content_hash: str | None = None,
+        size: int | None = None,
+        content_type: str | None = None,
+        file_name: str | None = None,
+        generation_id: str | None = None,
+        status: str = "pending",
+        error_type: str | None = None,
+        error_message: str | None = None,
+    ) -> CatalogRow:
+        timestamp = self._timestamp()
+
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                SELECT id, created_at
+                FROM materials
+                WHERE course_id = ? AND material_key = ?
+                """,
+                (course_id, material_key),
+            )
+            existing_material = _row_to_dict(cursor.fetchone())
+            material_id = (
+                existing_material["id"]
+                if existing_material is not None
+                else _new_id("material")
+            )
+            created_at = (
+                existing_material["created_at"]
+                if existing_material is not None
+                else timestamp
+            )
+
+            connection.execute(
+                """
+                INSERT INTO materials (
+                    id,
+                    course_id,
+                    material_key,
+                    kind,
+                    title,
+                    canvas_url,
+                    canvas_updated_at,
+                    content_hash,
+                    size,
+                    content_type,
+                    file_name,
+                    generation_id,
+                    status,
+                    error_type,
+                    error_message,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(course_id, material_key) DO UPDATE SET
+                    kind = excluded.kind,
+                    title = excluded.title,
+                    canvas_url = excluded.canvas_url,
+                    canvas_updated_at = excluded.canvas_updated_at,
+                    content_hash = excluded.content_hash,
+                    size = excluded.size,
+                    content_type = excluded.content_type,
+                    file_name = excluded.file_name,
+                    generation_id = excluded.generation_id,
+                    status = excluded.status,
+                    error_type = excluded.error_type,
+                    error_message = excluded.error_message,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    material_id,
+                    course_id,
+                    material_key,
+                    kind,
+                    _optional_text(title),
+                    _optional_text(canvas_url),
+                    _optional_text(canvas_updated_at),
+                    _optional_text(content_hash),
+                    size,
+                    _optional_text(content_type),
+                    _optional_text(file_name),
+                    _optional_text(generation_id),
+                    status,
+                    _optional_text(error_type),
+                    _safe_diagnostic_text(error_message),
+                    created_at,
+                    timestamp,
+                ),
+            )
+            cursor = connection.execute(
+                "SELECT * FROM materials WHERE course_id = ? AND material_key = ?",
+                (course_id, material_key),
+            )
+            return _row_to_dict(cursor.fetchone())
+
     def replace_material_placements(
         self,
         *,
@@ -286,6 +403,138 @@ class CatalogRepository:
                 ORDER BY position, id
                 """,
                 (course_id, material_key),
+            )
+            return [_row_to_dict(row) for row in cursor.fetchall()]
+
+    def replace_placements_for_manifest_materials(
+        self,
+        *,
+        course_id: str,
+        placements_by_material_key: Mapping[str, Sequence[Mapping[str, Any]]],
+    ) -> dict[str, list[CatalogRow]]:
+        timestamp = self._timestamp()
+        material_keys = list(dict.fromkeys(placements_by_material_key.keys()))
+        if not material_keys:
+            return {}
+
+        with self.connect() as connection:
+            replaced_placements: dict[str, list[CatalogRow]] = {}
+            for material_key in material_keys:
+                connection.execute(
+                    """
+                    DELETE FROM material_placements
+                    WHERE course_id = ? AND material_key = ?
+                    """,
+                    (course_id, material_key),
+                )
+                for placement in placements_by_material_key[material_key]:
+                    connection.execute(
+                        """
+                        INSERT INTO material_placements (
+                            id,
+                            course_id,
+                            material_key,
+                            source_kind,
+                            module_id,
+                            module_name,
+                            module_item_id,
+                            position,
+                            label,
+                            created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            _new_id("placement"),
+                            course_id,
+                            material_key,
+                            _optional_text(placement.get("source_kind")),
+                            _optional_text(placement.get("module_id")),
+                            _optional_text(placement.get("module_name")),
+                            _optional_text(placement.get("module_item_id")),
+                            placement.get("position"),
+                            _optional_text(placement.get("label")),
+                            timestamp,
+                        ),
+                    )
+
+                cursor = connection.execute(
+                    """
+                    SELECT *
+                    FROM material_placements
+                    WHERE course_id = ? AND material_key = ?
+                    ORDER BY position, id
+                    """,
+                    (course_id, material_key),
+                )
+                replaced_placements[material_key] = [
+                    _row_to_dict(row) for row in cursor.fetchall()
+                ]
+
+            return replaced_placements
+
+    def set_consent_state(
+        self,
+        *,
+        course_id: str,
+        consent_granted: bool,
+    ) -> CatalogRow:
+        timestamp = self._timestamp()
+
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE courses
+                SET consent_granted = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (1 if consent_granted else 0, timestamp, course_id),
+            )
+            return _select_course_by_id(connection, course_id)
+
+    def mark_materials_skipped(
+        self,
+        *,
+        course_id: str,
+        material_keys: Sequence[str],
+        error_type: str | None = None,
+        error_message: str | None = None,
+    ) -> list[CatalogRow]:
+        timestamp = self._timestamp()
+        unique_material_keys = list(dict.fromkeys(material_keys))
+        if not unique_material_keys:
+            return []
+
+        with self.connect() as connection:
+            for material_key in unique_material_keys:
+                connection.execute(
+                    """
+                    UPDATE materials
+                    SET
+                        status = 'skipped',
+                        error_type = ?,
+                        error_message = ?,
+                        updated_at = ?
+                    WHERE course_id = ? AND material_key = ?
+                    """,
+                    (
+                        _optional_text(error_type),
+                        _safe_diagnostic_text(error_message),
+                        timestamp,
+                        course_id,
+                        material_key,
+                    ),
+                )
+
+            placeholders = ", ".join("?" for _ in unique_material_keys)
+            cursor = connection.execute(
+                f"""
+                SELECT *
+                FROM materials
+                WHERE course_id = ? AND material_key IN ({placeholders})
+                ORDER BY material_key
+                """,
+                (course_id, *unique_material_keys),
             )
             return [_row_to_dict(row) for row in cursor.fetchall()]
 
