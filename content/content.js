@@ -116,7 +116,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     window.CanvasSessionApi.getCurrentCanvasCourseMaterials()
-      .then((data) => sendResponse({ success: true, data }))
+      .then((data) => {
+        const manifest = window.CanvasManifestBuilder?.buildManifest
+          ? window.CanvasManifestBuilder.buildManifest(data)
+          : null;
+
+        sendResponse({ success: true, data: { ...data, manifest } });
+      })
       .catch((error) => sendResponse({ success: false, error: error.message }));
 
     return true;

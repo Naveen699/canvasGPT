@@ -88,7 +88,77 @@ function createLink(className, text, href) {
   return link;
 }
 
+function getManifest(data) {
+  return data.manifest || null;
+}
+
+function getPlacementCountByMaterialKey(placements = []) {
+  return placements.reduce((counts, placement) => {
+    if (placement.materialKey) {
+      counts.set(placement.materialKey, (counts.get(placement.materialKey) || 0) + 1);
+    }
+
+    return counts;
+  }, new Map());
+}
+
+function groupMaterialsByKind(materials = []) {
+  return materials.reduce((groups, material) => {
+    const kind = material.kind || "unknown";
+
+    if (!groups.has(kind)) {
+      groups.set(kind, []);
+    }
+
+    groups.get(kind).push(material);
+    return groups;
+  }, new Map());
+}
+
+function getKindLabel(kind) {
+  const labels = {
+    announcement: "Announcements",
+    assignment: "Assignments",
+    canvas_url: "Canvas Links",
+    discussion: "Discussions",
+    file: "Files",
+    module_item: "Module-only Items",
+    page: "Pages"
+  };
+
+  return labels[kind] || kind.replaceAll("_", " ");
+}
+
 function renderSummary(data) {
+  const manifest = getManifest(data);
+
+  if (manifest) {
+    const courseName = manifest.courseName || `Course ${manifest.courseId}`;
+    const errors = manifest.collectionErrors || [];
+
+    summary.hidden = false;
+    summary.innerHTML = "";
+    summary.append(
+      createTextElement(
+        "p",
+        "",
+        `${courseName}: ${manifest.materials.length} deduplicated materials, ${manifest.placements.length} source placements.`
+      )
+    );
+
+    if (errors.length) {
+      summary.append(
+        createTextElement(
+          "p",
+          "error-text",
+          `Some endpoints were unavailable: ${errors.map((error) => error.name).filter(Boolean).join(", ")}`
+        )
+      );
+    }
+
+    return;
+  }
+
   const materials = data.materials || {};
   const counts = {
     modules: materials.modules?.length || 0,
@@ -118,11 +188,23 @@ function renderSummary(data) {
   }
 }
 
-function renderMaterialItem(material) {
+function renderMaterialItem(material, placementCount = 0) {
   const item = document.createElement("li");
   item.className = "material-item";
-  const title = material.title || material.text || material.name || "Untitled";
-  const href = material.htmlUrl || material.href || material.url || "";
+  const title =
+    material.title ||
+    material.text ||
+    material.name ||
+    material.fileName ||
+    material.materialKey ||
+    "Untitled";
+  const href =
+    material.canvasUrl ||
+    material.fileDownloadUrl ||
+    material.htmlUrl ||
+    material.href ||
+    material.url ||
+    "";
 
   if (href) {
     item.append(createLink("material-link", title, href));
@@ -131,10 +213,12 @@ function renderMaterialItem(material) {
   }
 
   const metaParts = [
-    material.type || material.itemType || "",
+    material.materialKey || "",
+    material.kind || material.type || material.itemType || "",
     material.moduleName ? `Module: ${material.moduleName}` : "",
+    placementCount ? `${placementCount} placement${placementCount === 1 ? "" : "s"}` : "",
     material.dueAt ? `Due ${new Date(material.dueAt).toLocaleDateString()}` : "",
-    material.contentType || "",
+    material.contentType || material.content_type || "",
     material.size ? `${material.size} bytes` : ""
   ].filter(Boolean);
 
@@ -145,7 +229,7 @@ function renderMaterialItem(material) {
   return item;
 }
 
-function renderSection(title, items) {
+function renderSection(title, items, placementCounts = new Map()) {
   const card = document.createElement("article");
   card.className = "material-card";
   card.append(createTextElement("h3", "section-title", `${title} (${items.length})`));
@@ -157,7 +241,9 @@ function renderSection(title, items) {
 
   const list = document.createElement("ul");
   list.className = "materials-list-inner";
-  items.forEach((item) => list.append(renderMaterialItem(item)));
+  items.forEach((item) =>
+    list.append(renderMaterialItem(item, placementCounts.get(item.materialKey) || 0))
+  );
   card.append(list);
 
   return card;
@@ -174,8 +260,41 @@ function normalizeFiles(files = []) {
 }
 
 function renderMaterials(data) {
+  const manifest = getManifest(data);
+
   const materials = data.materials || {};
   clearElement(materialsList);
+
+  if (manifest) {
+    const groupedMaterials = groupMaterialsByKind(manifest.materials || []);
+    const placementCounts = getPlacementCountByMaterialKey(manifest.placements || []);
+    const orderedKinds = [
+      "file",
+      "page",
+      "assignment",
+      "announcement",
+      "discussion",
+      "module_item",
+      "canvas_url"
+    ];
+    const renderedKinds = new Set();
+
+    orderedKinds.forEach((kind) => {
+      const items = groupedMaterials.get(kind) || [];
+      renderedKinds.add(kind);
+      materialsList.append(renderSection(getKindLabel(kind), items, placementCounts));
+    });
+
+    Array.from(groupedMaterials.keys())
+      .filter((kind) => !renderedKinds.has(kind))
+      .sort()
+      .forEach((kind) =>
+        materialsList.append(renderSection(getKindLabel(kind), groupedMaterials.get(kind), placementCounts))
+      );
+
+    return;
+  }
+
   materialsList.append(renderSection("Module Items", materials.modules || []));
   materialsList.append(renderSection("Pages", materials.pages || []));
   materialsList.append(renderSection("Assignments", materials.assignments || []));
@@ -196,7 +315,7 @@ loadMaterialsBtn.addEventListener("click", async () => {
 
     renderSummary(data);
     renderMaterials(data);
-    setStatus("Course materials collected.");
+    setStatus("Deduplicated course materials collected.");
   } catch (error) {
     summary.hidden = true;
     clearElement(materialsList);

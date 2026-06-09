@@ -18,7 +18,14 @@
   "content_scripts": [
     {
       "matches": ["https://*.instructure.com/*", "https://canvas.case.edu/*"],
-      "js": ["canvas/detect.js", "content/canvasApiClient.js", "content/content.js"],
+      "js": [
+        "canvas/detect.js",
+        "content/manifestUrl.js",
+        "content/materialKeys.js",
+        "content/manifestBuilder.js",
+        "content/canvasApiClient.js",
+        "content/content.js"
+      ],
       "run_at": "document_idle"
     }
   ],

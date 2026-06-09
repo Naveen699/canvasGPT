@@ -1,5 +1,12 @@
 const BACKEND_EXTRACT_URL = "http://localhost:8000/extract";
-const CONTENT_SCRIPT_FILES = ["canvas/detect.js", "content/canvasApiClient.js", "content/content.js"];
+const CONTENT_SCRIPT_FILES = [
+  "canvas/detect.js",
+  "content/manifestUrl.js",
+  "content/materialKeys.js",
+  "content/manifestBuilder.js",
+  "content/canvasApiClient.js",
+  "content/content.js"
+];
 
 importScripts(
   "canvas/detect.js",
