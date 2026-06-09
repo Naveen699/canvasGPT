@@ -20,6 +20,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+backend/.data/
 
 # Test / coverage output
 coverage/
@@ -29,3 +30,6 @@ coverage/
 .DS_Store
 .vscode/
 .idea/
+
+
+development_stages.md

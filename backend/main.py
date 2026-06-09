@@ -1,16 +1,36 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+import logging
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from backend.catalog import initialize_schema
+from backend.config import load_config
+from backend.logging_config import configure_logging
 
-app = FastAPI(title="Canvas AI Assistant API")
+
+logger = logging.getLogger("canvasgpt.backend")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    config = load_config()
+    app.state.config = config
+    configure_logging(config)
+    initialize_schema(config.db_path)
+    logger.info("CanvasGPT backend startup complete")
+    yield
+
+
+app = FastAPI(title="Canvas AI Assistant API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
