@@ -290,6 +290,49 @@ def test_replace_material_placements_replaces_existing_rows(tmp_path: Path) -> N
     ]
 
 
+def test_list_material_placements_returns_markdown_metadata_order(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    course = repository.get_or_create_course(
+        canvas_origin="https://canvas.example.edu",
+        course_id="12345",
+        local_profile_id="profile_abc",
+    )
+    repository.replace_material_placements(
+        course_id=course["id"],
+        material_key="page:overview",
+        placements=[
+            {"source_kind": "module", "position": 2, "label": "Read later"},
+            {
+                "source_kind": "module",
+                "module_id": "module_1",
+                "module_name": "Week 1",
+                "module_item_id": "item_1",
+                "position": 1,
+                "label": "Start here",
+            },
+        ],
+    )
+    repository.replace_material_placements(
+        course_id=course["id"],
+        material_key="file:other",
+        placements=[{"source_kind": "module", "position": 1, "label": "Other"}],
+    )
+
+    placements = repository.list_material_placements(
+        course_id=course["id"],
+        material_key="page:overview",
+    )
+
+    assert [placement["label"] for placement in placements] == [
+        "Start here",
+        "Read later",
+    ]
+    assert {placement["material_key"] for placement in placements} == {"page:overview"}
+    assert placements[0]["module_name"] == "Week 1"
+
+
 def test_replace_placements_for_manifest_materials_replaces_only_manifest_keys(
     tmp_path: Path,
 ) -> None:
@@ -468,6 +511,67 @@ def test_mark_vector_store_setup_failed_records_failure_without_success_state(
     assert failed_course["updated_at"] != course["updated_at"]
 
 
+def test_mark_materials_status_helpers_update_existing_materials_in_batches(
+    tmp_path: Path,
+) -> None:
+    clock = MutableClock()
+    repository = _repository(tmp_path, clock)
+    course = repository.get_or_create_course(
+        canvas_origin="https://canvas.example.edu",
+        course_id="12345",
+        canvas_user_id="67890",
+    )
+
+    for index in range(505):
+        repository.upsert_manifest_material_metadata(
+            course_id=course["id"],
+            material_key=f"page:{index:03d}",
+            kind="page",
+            status="pending",
+            error_type="old_error",
+            error_message="old diagnostic text",
+        )
+
+    material_keys = [f"page:{index:03d}" for index in range(505)]
+    clock.advance()
+    indexed_materials = repository.mark_materials_indexed(
+        course_id=course["id"],
+        material_keys=[*material_keys, "page:missing", "page:000"],
+        generation_id="sync_1",
+    )
+    clock.advance()
+    pending_materials = repository.mark_materials_pending(
+        course_id=course["id"],
+        material_keys=["page:000", "page:001"],
+        generation_id="sync_2",
+    )
+    clock.advance()
+    failed_materials = repository.mark_materials_failed(
+        course_id=course["id"],
+        material_keys=["page:002"],
+        error_type="upload_failed",
+        error_message="raw provider diagnostic",
+        generation_id="sync_2",
+    )
+
+    assert len(indexed_materials) == 505
+    assert indexed_materials[0]["material_key"] == "page:000"
+    assert indexed_materials[-1]["material_key"] == "page:504"
+    assert {material["status"] for material in indexed_materials} == {"indexed"}
+    assert {material["generation_id"] for material in indexed_materials} == {"sync_1"}
+    assert {material["error_type"] for material in indexed_materials} == {None}
+    assert {material["error_message"] for material in indexed_materials} == {None}
+    assert [material["status"] for material in pending_materials] == [
+        "pending",
+        "pending",
+    ]
+    assert {material["generation_id"] for material in pending_materials} == {"sync_2"}
+    assert failed_materials[0]["status"] == "failed"
+    assert failed_materials[0]["generation_id"] == "sync_2"
+    assert failed_materials[0]["error_type"] == "upload_failed"
+    assert failed_materials[0]["error_message"] == "[diagnostic omitted]"
+
+
 def test_mark_materials_skipped_updates_existing_materials_only(
     tmp_path: Path,
 ) -> None:
@@ -528,6 +632,72 @@ def test_create_sync_run_placeholder_uses_default_counts(tmp_path: Path) -> None
     assert sync_run["changed_count"] == 0
     assert sync_run["failed_count"] == 0
     assert sync_run["completed_at"] is None
+
+
+def test_complete_sync_run_updates_counts_and_redacts_warnings(
+    tmp_path: Path,
+) -> None:
+    clock = MutableClock()
+    repository = _repository(tmp_path, clock)
+    course = repository.get_or_create_course(
+        canvas_origin="https://canvas.example.edu",
+        course_id="12345",
+        canvas_user_id="67890",
+    )
+    sync_run = repository.create_sync_run_placeholder(
+        course_id=course["id"],
+        generation_id="sync_1",
+    )
+
+    clock.advance()
+    completed_sync_run = repository.complete_sync_run(
+        sync_run_id=sync_run["id"],
+        status="partial",
+        new_count=2,
+        changed_count=3,
+        unchanged_count=4,
+        indexed_count=5,
+        pending_count=6,
+        skipped_count=7,
+        failed_count=8,
+        warnings_json='{"warning": "provider diagnostic"}',
+    )
+
+    assert completed_sync_run["status"] == "partial"
+    assert completed_sync_run["new_count"] == 2
+    assert completed_sync_run["changed_count"] == 3
+    assert completed_sync_run["unchanged_count"] == 4
+    assert completed_sync_run["indexed_count"] == 5
+    assert completed_sync_run["pending_count"] == 6
+    assert completed_sync_run["skipped_count"] == 7
+    assert completed_sync_run["failed_count"] == 8
+    assert completed_sync_run["warnings_json"] == "[diagnostic omitted]"
+    assert completed_sync_run["completed_at"] != sync_run["completed_at"]
+    assert completed_sync_run["completed_at"] != sync_run["started_at"]
+
+
+def test_complete_sync_run_rejects_negative_counts(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    course = repository.get_or_create_course(
+        canvas_origin="https://canvas.example.edu",
+        course_id="12345",
+        canvas_user_id="67890",
+    )
+    sync_run = repository.create_sync_run_placeholder(
+        course_id=course["id"],
+        generation_id="sync_1",
+    )
+
+    try:
+        repository.complete_sync_run(
+            sync_run_id=sync_run["id"],
+            status="failed",
+            failed_count=-1,
+        )
+    except ValueError as exc:
+        assert str(exc) == "failed_count must be non-negative"
+    else:
+        raise AssertionError("Expected negative sync-run counts to be rejected")
 
 
 def test_diagnostic_fields_redact_sensitive_text(tmp_path: Path) -> None:

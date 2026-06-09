@@ -12,6 +12,7 @@ from backend.catalog.schema import initialize_schema
 
 CatalogRow = dict[str, Any]
 DIAGNOSTIC_PLACEHOLDER = "[diagnostic omitted]"
+SQLITE_BATCH_SIZE = 500
 
 
 class CatalogRepository:
@@ -406,6 +407,24 @@ class CatalogRepository:
             )
             return [_row_to_dict(row) for row in cursor.fetchall()]
 
+    def list_material_placements(
+        self,
+        *,
+        course_id: str,
+        material_key: str,
+    ) -> list[CatalogRow]:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                SELECT *
+                FROM material_placements
+                WHERE course_id = ? AND material_key = ?
+                ORDER BY position, id
+                """,
+                (course_id, material_key),
+            )
+            return [_row_to_dict(row) for row in cursor.fetchall()]
+
     def replace_placements_for_manifest_materials(
         self,
         *,
@@ -607,6 +626,34 @@ class CatalogRepository:
             )
             return _select_course_by_id(connection, course_id)
 
+    def mark_materials_indexed(
+        self,
+        *,
+        course_id: str,
+        material_keys: Sequence[str],
+        generation_id: str | None = None,
+    ) -> list[CatalogRow]:
+        return self._mark_materials_status(
+            course_id=course_id,
+            material_keys=material_keys,
+            status="indexed",
+            generation_id=generation_id,
+        )
+
+    def mark_materials_pending(
+        self,
+        *,
+        course_id: str,
+        material_keys: Sequence[str],
+        generation_id: str | None = None,
+    ) -> list[CatalogRow]:
+        return self._mark_materials_status(
+            course_id=course_id,
+            material_keys=material_keys,
+            status="pending",
+            generation_id=generation_id,
+        )
+
     def mark_materials_skipped(
         self,
         *,
@@ -615,43 +662,31 @@ class CatalogRepository:
         error_type: str | None = None,
         error_message: str | None = None,
     ) -> list[CatalogRow]:
-        timestamp = self._timestamp()
-        unique_material_keys = list(dict.fromkeys(material_keys))
-        if not unique_material_keys:
-            return []
+        return self._mark_materials_status(
+            course_id=course_id,
+            material_keys=material_keys,
+            status="skipped",
+            error_type=error_type,
+            error_message=error_message,
+        )
 
-        with self.connect() as connection:
-            for material_key in unique_material_keys:
-                connection.execute(
-                    """
-                    UPDATE materials
-                    SET
-                        status = 'skipped',
-                        error_type = ?,
-                        error_message = ?,
-                        updated_at = ?
-                    WHERE course_id = ? AND material_key = ?
-                    """,
-                    (
-                        _optional_text(error_type),
-                        _safe_diagnostic_text(error_message),
-                        timestamp,
-                        course_id,
-                        material_key,
-                    ),
-                )
-
-            placeholders = ", ".join("?" for _ in unique_material_keys)
-            cursor = connection.execute(
-                f"""
-                SELECT *
-                FROM materials
-                WHERE course_id = ? AND material_key IN ({placeholders})
-                ORDER BY material_key
-                """,
-                (course_id, *unique_material_keys),
-            )
-            return [_row_to_dict(row) for row in cursor.fetchall()]
+    def mark_materials_failed(
+        self,
+        *,
+        course_id: str,
+        material_keys: Sequence[str],
+        error_type: str | None = None,
+        error_message: str | None = None,
+        generation_id: str | None = None,
+    ) -> list[CatalogRow]:
+        return self._mark_materials_status(
+            course_id=course_id,
+            material_keys=material_keys,
+            status="failed",
+            generation_id=generation_id,
+            error_type=error_type,
+            error_message=error_message,
+        )
 
     def create_sync_run_placeholder(
         self,
@@ -691,6 +726,101 @@ class CatalogRepository:
                 (sync_run_id,),
             )
             return _row_to_dict(cursor.fetchone())
+
+    def complete_sync_run(
+        self,
+        *,
+        sync_run_id: str,
+        status: str,
+        new_count: int = 0,
+        changed_count: int = 0,
+        unchanged_count: int = 0,
+        indexed_count: int = 0,
+        pending_count: int = 0,
+        skipped_count: int = 0,
+        failed_count: int = 0,
+        warnings_json: str | None = None,
+    ) -> CatalogRow:
+        timestamp = self._timestamp()
+
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE sync_runs
+                SET
+                    status = ?,
+                    new_count = ?,
+                    changed_count = ?,
+                    unchanged_count = ?,
+                    indexed_count = ?,
+                    pending_count = ?,
+                    skipped_count = ?,
+                    failed_count = ?,
+                    warnings_json = ?,
+                    completed_at = ?
+                WHERE id = ?
+                """,
+                (
+                    _required_text(status, "status"),
+                    _non_negative_count(new_count, "new_count"),
+                    _non_negative_count(changed_count, "changed_count"),
+                    _non_negative_count(unchanged_count, "unchanged_count"),
+                    _non_negative_count(indexed_count, "indexed_count"),
+                    _non_negative_count(pending_count, "pending_count"),
+                    _non_negative_count(skipped_count, "skipped_count"),
+                    _non_negative_count(failed_count, "failed_count"),
+                    _safe_diagnostic_text(warnings_json),
+                    timestamp,
+                    sync_run_id,
+                ),
+            )
+            return _select_sync_run_by_id(connection, sync_run_id)
+
+    def _mark_materials_status(
+        self,
+        *,
+        course_id: str,
+        material_keys: Sequence[str],
+        status: str,
+        generation_id: str | None = None,
+        error_type: str | None = None,
+        error_message: str | None = None,
+    ) -> list[CatalogRow]:
+        timestamp = self._timestamp()
+        unique_material_keys = _unique_text_values(material_keys)
+        if not unique_material_keys:
+            return []
+
+        with self.connect() as connection:
+            for batch in _batches(unique_material_keys):
+                placeholders = ", ".join("?" for _ in batch)
+                connection.execute(
+                    f"""
+                    UPDATE materials
+                    SET
+                        status = ?,
+                        generation_id = COALESCE(?, generation_id),
+                        error_type = ?,
+                        error_message = ?,
+                        updated_at = ?
+                    WHERE course_id = ? AND material_key IN ({placeholders})
+                    """,
+                    (
+                        _required_text(status, "status"),
+                        _optional_text(generation_id),
+                        _optional_text(error_type),
+                        _safe_diagnostic_text(error_message),
+                        timestamp,
+                        course_id,
+                        *batch,
+                    ),
+                )
+
+            return _select_materials_by_keys(
+                connection,
+                course_id=course_id,
+                material_keys=unique_material_keys,
+            )
 
     def _timestamp(self) -> str:
         timestamp = self._now()
@@ -758,6 +888,44 @@ def _select_course_by_hash(
     return course
 
 
+def _select_sync_run_by_id(
+    connection: sqlite3.Connection,
+    sync_run_id: str,
+) -> CatalogRow:
+    cursor = connection.execute(
+        "SELECT * FROM sync_runs WHERE id = ?",
+        (sync_run_id,),
+    )
+    sync_run = _row_to_dict(cursor.fetchone())
+    if sync_run is None:
+        raise LookupError(f"Sync run row was not found after write: {sync_run_id}")
+
+    return sync_run
+
+
+def _select_materials_by_keys(
+    connection: sqlite3.Connection,
+    *,
+    course_id: str,
+    material_keys: Sequence[str],
+) -> list[CatalogRow]:
+    materials: list[CatalogRow] = []
+    for batch in _batches(material_keys):
+        placeholders = ", ".join("?" for _ in batch)
+        cursor = connection.execute(
+            f"""
+            SELECT *
+            FROM materials
+            WHERE course_id = ? AND material_key IN ({placeholders})
+            ORDER BY material_key
+            """,
+            (course_id, *batch),
+        )
+        materials.extend(_row_to_dict(row) for row in cursor.fetchall())
+
+    return sorted(materials, key=lambda material: material["material_key"])
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
@@ -776,6 +944,32 @@ def _required_text(value: object, field_name: str) -> str:
         raise ValueError(f"{field_name} is required")
 
     return normalized
+
+
+def _unique_text_values(values: Sequence[str]) -> list[str]:
+    unique_values: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = _optional_text(value)
+        if normalized is None or normalized in seen:
+            continue
+
+        seen.add(normalized)
+        unique_values.append(normalized)
+
+    return unique_values
+
+
+def _batches(values: Sequence[str], size: int = SQLITE_BATCH_SIZE) -> Iterator[list[str]]:
+    for start in range(0, len(values), size):
+        yield list(values[start : start + size])
+
+
+def _non_negative_count(value: int, field_name: str) -> int:
+    if value < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+
+    return value
 
 
 def _safe_diagnostic_text(value: object) -> str | None:

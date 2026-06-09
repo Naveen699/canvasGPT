@@ -18,7 +18,11 @@ from backend.course_index.models import (
     CourseIndexPrepareRequest,
     CourseIndexPrepareResponse,
     CourseIndexSkippedMaterial,
+    CourseIndexSignedFile,
+    CourseIndexSyncMaterial,
     CourseIndexSyncPlan,
+    CourseIndexSyncRequest,
+    CourseIndexSyncResponse,
     CourseIndexWarning,
 )
 from backend.course_index.sync_plan import (
@@ -38,7 +42,11 @@ __all__ = [
     "CourseIndexPrepareRequest",
     "CourseIndexPrepareResponse",
     "CourseIndexSkippedMaterial",
+    "CourseIndexSignedFile",
+    "CourseIndexSyncMaterial",
     "CourseIndexSyncPlan",
+    "CourseIndexSyncRequest",
+    "CourseIndexSyncResponse",
     "CourseIndexWarning",
     "DEFAULT_ALLOWED_CONTENT_TYPES",
     "DEFAULT_ALLOWED_FILE_EXTENSIONS",

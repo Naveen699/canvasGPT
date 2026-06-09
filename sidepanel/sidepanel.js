@@ -3,6 +3,7 @@ const pageContext = document.getElementById("pageContext");
 const loadMaterialsBtn = document.getElementById("loadMaterialsBtn");
 const summary = document.getElementById("summary");
 const materialsList = document.getElementById("materialsList");
+const BACKEND_COURSE_INDEX_SYNC_URL = "http://localhost:8000/course-index/sync";
 
 let activeTabIsCanvas = false;
 let latestCourseIndex = null;
@@ -32,6 +33,127 @@ function sendRuntimeMessage(message) {
       resolve(response.data);
     });
   });
+}
+
+function isMissingSyncMessageHandlerError(error) {
+  return [
+    "Extension message failed.",
+    "Receiving end does not exist",
+    "message port closed before a response was received"
+  ].some((message) => error.message.includes(message));
+}
+
+async function sendCourseIndexSyncToBackend(payload) {
+  const response = await fetch(BACKEND_COURSE_INDEX_SYNC_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data?.detail || `Course material sync returned ${response.status}.`);
+  }
+
+  return data;
+}
+
+function getPlanMaterialKey(item) {
+  return typeof item === "string" ? item : item?.materialKey || "";
+}
+
+function getSkippedPlanMaterialKeys(syncPlan = {}) {
+  return new Set((syncPlan.skipped || []).map(getPlanMaterialKey).filter(Boolean));
+}
+
+function getMaterialsForSync(manifest, syncPlan, options = {}) {
+  const materials = manifest?.materials || [];
+  const planSources = options.includeUnchanged
+    ? [...(syncPlan?.new || []), ...(syncPlan?.changed || []), ...(syncPlan?.unchanged || [])]
+    : [...(syncPlan?.new || []), ...(syncPlan?.changed || [])];
+  const planKeys = new Set(
+    planSources.map(getPlanMaterialKey).filter(Boolean)
+  );
+  const skippedKeys = getSkippedPlanMaterialKeys(syncPlan);
+  const hasPlannedChanges =
+    getSyncCount(syncPlan, "newCount") > 0 || getSyncCount(syncPlan, "changedCount") > 0;
+
+  if (!planKeys.size && syncPlan && !hasPlannedChanges) {
+    return options.includeUnchanged
+      ? materials.filter((material) => !skippedKeys.has(material.materialKey))
+      : [];
+  }
+
+  if (!planKeys.size) {
+    return materials.filter((material) => !skippedKeys.has(material.materialKey));
+  }
+
+  return materials.filter(
+    (material) => planKeys.has(material.materialKey) && !skippedKeys.has(material.materialKey)
+  );
+}
+
+function isFileMaterial(material) {
+  return material?.kind === "file" || String(material?.materialKey || "").startsWith("file:");
+}
+
+async function resolveSignedFilesForSync(manifest, syncPlan, options = {}) {
+  const fileMaterials = getMaterialsForSync(manifest, syncPlan, options).filter(isFileMaterial);
+
+  if (!fileMaterials.length) {
+    return { signedFiles: [], warnings: [] };
+  }
+
+  try {
+    const data = await sendRuntimeMessage({
+      type: "RESOLVE_ACTIVE_COURSE_SIGNED_FILES",
+      canvasOrigin: manifest?.canvasOrigin,
+      courseId: manifest?.courseId,
+      manifest,
+      materials: fileMaterials
+    });
+
+    return {
+      signedFiles: data?.signedFiles || [],
+      warnings: data?.warnings || []
+    };
+  } catch (error) {
+    if (isMissingSyncMessageHandlerError(error)) {
+      return { signedFiles: [], warnings: [] };
+    }
+
+    throw error;
+  }
+}
+
+function mergeSyncWarnings(syncResult = {}, extraWarnings = []) {
+  return {
+    ...syncResult,
+    warnings: [...(syncResult.warnings || []), ...extraWarnings]
+  };
+}
+
+async function syncCourseIndex(courseIndexId, manifest, syncPlan, signedFiles = [], options = {}) {
+  const payload = {
+    courseIndexId,
+    materials: getMaterialsForSync(manifest, syncPlan, options),
+    signedFiles
+  };
+
+  try {
+    return await sendRuntimeMessage({
+      type: "SYNC_COURSE_INDEX",
+      ...payload
+    });
+  } catch (error) {
+    if (!isMissingSyncMessageHandlerError(error)) {
+      throw error;
+    }
+
+    return sendCourseIndexSyncToBackend(payload);
+  }
 }
 
 function formatRouteLabel(routeInfo) {
@@ -212,14 +334,14 @@ function groupWarningsByReason(warnings = []) {
   }, new Map());
 }
 
-function renderStorageWarnings(warnings = []) {
+function renderWarnings(warnings = [], title = "Storage warnings") {
   if (!warnings.length) {
     return null;
   }
 
   const wrapper = document.createElement("div");
   wrapper.className = "storage-warnings";
-  wrapper.append(createTextElement("p", "warning-text", "Storage warnings"));
+  wrapper.append(createTextElement("p", "warning-text", title));
 
   const list = document.createElement("ul");
   list.className = "warning-list";
@@ -237,6 +359,10 @@ function renderStorageWarnings(warnings = []) {
   return wrapper;
 }
 
+function renderStorageWarnings(warnings = []) {
+  return renderWarnings(warnings, "Storage warnings");
+}
+
 function renderVectorStoreSummary(vectorStore) {
   if (!vectorStore?.vectorStoreId) {
     return null;
@@ -250,6 +376,51 @@ function renderVectorStoreSummary(vectorStore) {
   ].filter(Boolean);
 
   return createTextElement("p", "success-text", `${details.join(" - ")}.`);
+}
+
+function getResultCount(result = {}, ...keys) {
+  const value = keys.map((key) => result[key]).find((count) => Number.isFinite(Number(count)));
+  return value === undefined ? null : Number(value);
+}
+
+function getSyncResultStatus(syncResult = {}) {
+  return syncResult.status || syncResult.syncStatus || "";
+}
+
+function formatSyncResult(syncResult = {}) {
+  const parts = [
+    ["native indexed", getResultCount(syncResult, "nativeIndexedCount", "native_indexed_count")],
+    ["file indexed", getResultCount(syncResult, "fileIndexedCount", "file_indexed_count")],
+    ["indexed", getResultCount(syncResult, "indexedCount", "indexed_count")],
+    ["pending", getResultCount(syncResult, "pendingFileCount", "pending_file_count", "pendingCount", "pending_count")],
+    ["skipped", getResultCount(syncResult, "skippedCount", "skipped_count")],
+    ["failed", getResultCount(syncResult, "failedCount", "failed_count")]
+  ];
+
+  return parts
+    .filter(([, count]) => count !== null)
+    .map(([label, count]) => `${count} ${label}`)
+    .join(", ");
+}
+
+function renderSyncResultSummary(syncResult) {
+  if (!syncResult) {
+    return null;
+  }
+
+  const statusValue = getSyncResultStatus(syncResult);
+  const countSummary = formatSyncResult(syncResult);
+  const details = [
+    statusValue ? `status ${statusValue}` : "",
+    syncResult.generationId ? `generation ${syncResult.generationId}` : "",
+    countSummary
+  ].filter(Boolean);
+
+  if (!details.length) {
+    return null;
+  }
+
+  return createTextElement("p", statusValue === "failed" ? "error-text" : "success-text", `Sync result: ${details.join(" - ")}.`);
 }
 
 function renderSummary(data) {
@@ -288,11 +459,25 @@ function renderSummary(data) {
       if (vectorStoreSummary) {
         summary.append(vectorStoreSummary);
       }
+
+      const syncResultSummary = renderSyncResultSummary(courseIndex.syncResult);
+      if (syncResultSummary) {
+        summary.append(syncResultSummary);
+      }
+
+      if (courseIndex.syncError) {
+        summary.append(createTextElement("p", "error-text", `Sync failed: ${courseIndex.syncError}`));
+      }
     }
 
     const warnings = courseIndex?.warnings || [];
     if (warnings.length) {
       summary.append(renderStorageWarnings(warnings));
+    }
+
+    const syncWarnings = courseIndex?.syncResult?.warnings || [];
+    if (syncWarnings.length) {
+      summary.append(renderWarnings(syncWarnings, "Sync warnings"));
     }
 
     if (errors.length) {
@@ -457,6 +642,58 @@ function setLatestCourseIndex(courseIndex) {
   latestCourseIndex = courseIndex || null;
 }
 
+function updateLatestCourseIndex(patch) {
+  latestCourseIndex = {
+    ...(latestCourseIndex || {}),
+    ...patch
+  };
+  latestCollectionData = {
+    ...(latestCollectionData || {}),
+    courseIndex: latestCourseIndex
+  };
+  renderSummary(latestCollectionData);
+}
+
+function getFinalCollectionStatus(courseIndex) {
+  const syncResult = courseIndex?.syncResult;
+  const syncStatus = getSyncResultStatus(syncResult);
+  const failedCount = getResultCount(syncResult, "failedCount", "failed_count") || 0;
+  const warningCount = syncResult?.warnings?.length || 0;
+
+  if (syncStatus === "failed") {
+    return "Course materials stored, but sync failed.";
+  }
+
+  if (syncResult && (syncStatus === "partial" || failedCount > 0 || warningCount > 0)) {
+    return "Course materials synced with warnings.";
+  }
+
+  if (syncResult) {
+    return "Course materials stored and synced for search.";
+  }
+
+  if (courseIndex?.vectorStore?.action === "reused") {
+    return "Course materials stored and existing vector store reused.";
+  }
+
+  if (courseIndex?.vectorStore?.vectorStoreId) {
+    return "Course materials stored and vector store created.";
+  }
+
+  if (isLocalCatalogUpToDate(courseIndex?.syncPlan)) {
+    return "Local catalog is already up to date.";
+  }
+
+  return "Deduplicated course materials collected and stored locally.";
+}
+
+function shouldSyncUnchangedMaterials(vectorStore) {
+  return (
+    vectorStore?.action === "created" ||
+    (vectorStore?.vectorStoreStatus && vectorStore.vectorStoreStatus !== "ready")
+  );
+}
+
 loadMaterialsBtn.addEventListener("click", async () => {
   setBusy(true);
   latestCollectionData = null;
@@ -481,28 +718,54 @@ loadMaterialsBtn.addEventListener("click", async () => {
         consentGranted: true
       });
 
-      latestCourseIndex = {
-        ...latestCourseIndex,
+      updateLatestCourseIndex({
         consentGranted: true,
         vectorStoreStatus: vectorStore.vectorStoreStatus,
         vectorStore
+      });
+
+      setStatus("Vector store ready. Syncing course materials for search...");
+      const manifest = getManifest(latestCollectionData);
+      const syncOptions = {
+        includeUnchanged: shouldSyncUnchangedMaterials(vectorStore)
       };
-      latestCollectionData = {
-        ...latestCollectionData,
-        courseIndex: latestCourseIndex
-      };
-      renderSummary(latestCollectionData);
+      const materialsForSync = getMaterialsForSync(
+        manifest,
+        latestCourseIndex.syncPlan,
+        syncOptions
+      );
+      const fileMaterialCount = materialsForSync.filter(isFileMaterial).length;
+
+      if (fileMaterialCount) {
+        setStatus("Resolving Canvas file access for sync...");
+      }
+
+      const signedFileResolution = fileMaterialCount
+        ? await resolveSignedFilesForSync(manifest, latestCourseIndex.syncPlan, syncOptions)
+        : { signedFiles: [], warnings: [] };
+
+      if (fileMaterialCount) {
+        setStatus("Canvas file access resolved. Syncing course materials for search...");
+      }
+
+      const syncResult = await syncCourseIndex(
+        latestCourseIndex.courseIndexId,
+        manifest,
+        latestCourseIndex.syncPlan,
+        signedFileResolution.signedFiles,
+        syncOptions
+      );
+      const displayedSyncResult = mergeSyncWarnings(
+        syncResult,
+        signedFileResolution.warnings
+      );
+      updateLatestCourseIndex({
+        syncResult: displayedSyncResult,
+        syncStatus: getSyncResultStatus(displayedSyncResult)
+      });
     }
 
-    setStatus(
-      latestCourseIndex?.vectorStore?.action === "reused"
-        ? "Course materials stored and existing vector store reused."
-        : latestCourseIndex?.vectorStore?.vectorStoreId
-        ? "Course materials stored and vector store created."
-        : isLocalCatalogUpToDate(data.courseIndex?.syncPlan)
-        ? "Local catalog is already up to date."
-        : "Deduplicated course materials collected and stored locally."
-    );
+    setStatus(getFinalCollectionStatus(latestCourseIndex || data.courseIndex));
   } catch (error) {
     if (!latestCollectionData) {
       setLatestCourseIndex(null);
@@ -511,11 +774,25 @@ loadMaterialsBtn.addEventListener("click", async () => {
       materialsList.append(createTextElement("p", "error-text", error.message));
       setStatus("Could not collect course materials.");
     } else {
+      if (latestCourseIndex?.vectorStore?.vectorStoreId) {
+        updateLatestCourseIndex({
+          syncError: error.message
+        });
+      }
+
       setStatus(error.message);
     }
   } finally {
     setBusy(false);
   }
 });
+
+if (globalThis.__CANVASGPT_TEST__) {
+  globalThis.CanvasGptSidepanel = {
+    getMaterialsForSync,
+    mergeSyncWarnings,
+    shouldSyncUnchangedMaterials
+  };
+}
 
 refreshCanvasContext();

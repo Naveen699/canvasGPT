@@ -167,13 +167,25 @@ class OpenAIClient:
         vector_store_id: str,
         files_with_attributes: Sequence[VectorStoreFileAttachment],
     ) -> FileBatch:
-        result = self._sdk_client().vector_stores.file_batches.create(
-            vector_store_id=vector_store_id,
-            files=[
-                _file_attachment_payload(attachment)
-                for attachment in files_with_attributes
-            ],
-        )
+        sdk_file_batches = self._sdk_client().vector_stores.file_batches
+        try:
+            result = sdk_file_batches.create(
+                vector_store_id=vector_store_id,
+                files=[
+                    _file_attachment_payload(attachment)
+                    for attachment in files_with_attributes
+                ],
+            )
+        except Exception as exc:
+            if not _should_retry_file_batch_with_file_ids(exc):
+                raise
+
+            result = sdk_file_batches.create(
+                vector_store_id=vector_store_id,
+                file_ids=[
+                    attachment.file_id for attachment in files_with_attributes
+                ],
+            )
         return _file_batch_from_result(result)
 
     def retrieve_file_batch(
@@ -253,6 +265,19 @@ def _file_attachment_payload(
         payload["attributes"] = dict(attachment.attributes)
 
     return payload
+
+
+def _should_retry_file_batch_with_file_ids(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return isinstance(exc, TypeError) or (
+        "files" in message
+        and (
+            "unexpected" in message
+            or "unknown" in message
+            or "extra" in message
+            or "invalid" in message
+        )
+    )
 
 
 def _vector_store_from_result(value: Any) -> VectorStore:

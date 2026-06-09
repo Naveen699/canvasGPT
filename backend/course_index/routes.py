@@ -14,10 +14,16 @@ from backend.course_index.models import (
     CourseIndexPrepareRequest,
     CourseIndexPrepareResponse,
     CourseIndexSkippedMaterial,
+    CourseIndexSyncRequest,
+    CourseIndexSyncResponse,
     CourseIndexSyncPlan,
     CourseIndexVectorStoreRequest,
     CourseIndexVectorStoreResponse,
     CourseIndexWarning,
+)
+from backend.course_index.sync import (
+    CourseIndexSyncError,
+    sync_course_index as sync_course_index_service,
 )
 from backend.course_index.sync_plan import build_sync_plan
 from backend.course_index.vector_store_lifecycle import (
@@ -274,6 +280,66 @@ def ensure_course_index_vector_store(
     )
 
 
+@router.post(
+    "/sync",
+    response_model=CourseIndexSyncResponse,
+    response_model_by_alias=True,
+)
+def sync_course_index(
+    payload: CourseIndexSyncRequest,
+    request: Request,
+) -> CourseIndexSyncResponse:
+    _reject_http_credentials(request)
+    repository = _repository_from_request(request)
+
+    try:
+        result = sync_course_index_service(
+            repository=repository,
+            openai_client=_openai_client_from_request(request),
+            course_index_id=payload.course_index_id,
+            materials=payload.materials,
+            signed_files=payload.signed_files,
+            max_file_bytes=request.app.state.config.max_file_bytes,
+        )
+    except CourseIndexSyncError as exc:
+        if exc.code == "course_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=exc.message,
+            ) from exc
+
+        if exc.code in {"consent_required", "vector_store_missing"}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=exc.message,
+            ) from exc
+
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.message,
+        ) from exc
+
+    return CourseIndexSyncResponse(
+        courseIndexId=result.course_index_id,
+        generationId=result.generation_id,
+        syncStatus=result.status,
+        nativeIndexedCount=result.native_indexed_count,
+        fileIndexedCount=result.file_indexed_count,
+        pendingFileCount=result.pending_file_count,
+        skippedCount=result.skipped_count,
+        failedCount=result.failed_count,
+        warnings=[
+            CourseIndexWarning(
+                materialKey=warning.material_key,
+                title=warning.title,
+                reason=warning.reason,
+                message=warning.message,
+            )
+            for warning in result.warnings
+        ],
+    )
+
+
 def _repository_from_request(request: Request) -> CatalogRepository:
     return CatalogRepository(request.app.state.config.db_path)
 
@@ -285,6 +351,21 @@ def _openai_client_from_request(request: Request):
 
     return OpenAIClient(
         OpenAIClientSettings(api_key=request.app.state.config.openai_api_key)
+    )
+
+
+def _reject_http_credentials(request: Request) -> None:
+    forbidden_headers = [
+        header_name
+        for header_name in ("authorization", "cookie")
+        if header_name in request.headers
+    ]
+    if not forbidden_headers:
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Course index sync requests must not include Cookie or Authorization headers.",
     )
 
 

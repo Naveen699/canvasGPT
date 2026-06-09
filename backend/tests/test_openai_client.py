@@ -158,6 +158,40 @@ def test_vector_store_file_batch_boundaries_include_per_file_attributes() -> Non
     ]
 
 
+def test_vector_store_file_batch_falls_back_to_file_ids_for_older_sdks() -> None:
+    sdk = FakeSdk()
+    sdk.vector_stores.file_batches.create = FailOnceCaptureResult(
+        {
+            "id": "batch_123",
+            "vector_store_id": "vs_123",
+            "status": "in_progress",
+            "file_counts": {"in_progress": 2},
+        },
+        TypeError("create() got an unexpected keyword argument 'files'"),
+    )
+    client = OpenAIClient(sdk_client=sdk)
+
+    batch = client.attach_file_batch(
+        "vs_123",
+        [
+            VectorStoreFileAttachment(file_id="file_1"),
+            VectorStoreFileAttachment(file_id="file_2"),
+        ],
+    )
+
+    assert batch.id == "batch_123"
+    assert sdk.vector_stores.file_batches.create.calls == [
+        {
+            "vector_store_id": "vs_123",
+            "files": [{"file_id": "file_1"}, {"file_id": "file_2"}],
+        },
+        {
+            "vector_store_id": "vs_123",
+            "file_ids": ["file_1", "file_2"],
+        },
+    ]
+
+
 def test_response_file_search_boundary_includes_vector_store_and_filters() -> None:
     sdk = FakeSdk()
     client = OpenAIClient(sdk_client=sdk)
@@ -278,4 +312,17 @@ class CaptureResult:
             self.calls.append({"args": args, **kwargs})
         else:
             self.calls.append(kwargs)
+        return self.result
+
+
+class FailOnceCaptureResult(CaptureResult):
+    def __init__(self, result: dict[str, object], error: Exception) -> None:
+        super().__init__(result)
+        self.error = error
+
+    def __call__(self, *args, **kwargs):
+        super().__call__(*args, **kwargs)
+        if len(self.calls) == 1:
+            raise self.error
+
         return self.result

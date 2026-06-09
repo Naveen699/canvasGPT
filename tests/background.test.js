@@ -234,4 +234,58 @@ describe("background course material identity fallback", () => {
       consentGranted: true
     });
   });
+
+  it("posts course sync payloads without backend cookies or auth headers", async () => {
+    const requests = [];
+    const helpers = loadBackgroundIdentityHelpers("local_profile_abc", async (url, options) => {
+      requests.push({ url, options });
+
+      return {
+        ok: true,
+        json: async () => ({
+          courseIndexId: "course_abc",
+          status: "ready",
+          nativeIndexedCount: 1,
+          fileIndexedCount: 1
+        })
+      };
+    });
+    const materials = [
+      {
+        materialKey: "page:overview",
+        kind: "page",
+        title: "Overview",
+        body: "Transient body"
+      }
+    ];
+    const signedFiles = [
+      {
+        materialKey: "file:987",
+        fileId: "987",
+        fileName: "lecture.pdf",
+        contentType: "application/pdf",
+        size: 2048,
+        signedUrl: "https://canvas.example.edu/files/987/download?verifier=secret"
+      }
+    ];
+
+    await expect(
+      helpers.syncCourseIndex("course_abc", { materials, signedFiles })
+    ).resolves.toMatchObject({
+      courseIndexId: "course_abc",
+      status: "ready"
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe("http://localhost:8000/course-index/sync");
+    expect(requests[0].options.method).toBe("POST");
+    expect(requests[0].options.credentials).toBeUndefined();
+    expect(requests[0].options.headers).toEqual({ "Content-Type": "application/json" });
+    expect(requests[0].options.headers.Authorization).toBeUndefined();
+    expect(requests[0].options.headers.Cookie).toBeUndefined();
+    expect(JSON.parse(requests[0].options.body)).toEqual({
+      courseIndexId: "course_abc",
+      materials,
+      signedFiles
+    });
+  });
 });

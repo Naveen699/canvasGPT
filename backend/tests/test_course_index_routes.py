@@ -1,12 +1,21 @@
 import importlib
 import sqlite3
 import sys
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
+from urllib.error import URLError
 
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.openai_client import VectorStore
+from backend.openai_client import (
+    FileBatch,
+    FileContent,
+    UploadedFile,
+    VectorStore,
+    VectorStoreFileAttachment,
+)
 
 
 ENV_VARS = (
@@ -977,9 +986,251 @@ def test_vector_store_endpoint_denies_missing_consent_without_openai_create(
     assert fake_openai.create_vector_store_calls == []
 
 
+def test_sync_endpoint_indexes_native_material_and_marks_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main, db_path = _import_main(tmp_path, monkeypatch)
+    fake_openai = RouteFakeOpenAIClient(batch_status="completed")
+
+    with TestClient(main.app) as client:
+        main.app.state.openai_client_factory = lambda _config: fake_openai
+        course_index_id = _prepared_consented_course(client, db_path)
+        response = client.post(
+            "/course-index/sync",
+            json={
+                "courseIndexId": course_index_id,
+                "materials": [
+                    {
+                        "materialKey": "assignment:ready",
+                        "kind": "assignment",
+                        "title": "Week 1 Reading",
+                        "canvasUrl": "https://canvas.example.edu/courses/123/assignments/1",
+                        "body": "<p>Read chapter 1 before class.</p>",
+                    }
+                ],
+                "signedFiles": [],
+            },
+        )
+
+    assert response.status_code == 200
+    response_data = response.json()
+    assert response_data["courseIndexId"] == course_index_id
+    assert response_data["generationId"].startswith("sync_")
+    assert response_data["syncStatus"] == "ready"
+    assert response_data["nativeIndexedCount"] == 1
+    assert response_data["fileIndexedCount"] == 0
+    assert response_data["pendingFileCount"] == 0
+    assert response_data["skippedCount"] == 0
+    assert response_data["failedCount"] == 0
+    assert response_data["warnings"] == []
+    assert [call["file_name"] for call in fake_openai.upload_file_calls] == [
+        "Week-1-Reading.md"
+    ]
+    uploaded_markdown = fake_openai.upload_file_calls[0]["content"].decode("utf-8")
+    assert uploaded_markdown.startswith("# Week 1 Reading\n")
+    assert "- Source type: assignment" in uploaded_markdown
+    assert "Read chapter 1 before class." in uploaded_markdown
+    assert [len(call["files"]) for call in fake_openai.attach_file_batch_calls] == [1]
+
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        course = connection.execute(
+            "SELECT sync_status, last_synced_at FROM courses WHERE id = ?",
+            (course_index_id,),
+        ).fetchone()
+        material = connection.execute(
+            """
+            SELECT status, openai_file_id, file_name, error_type
+            FROM materials
+            WHERE course_id = ? AND material_key = 'assignment:ready'
+            """,
+            (course_index_id,),
+        ).fetchone()
+        materials = [dict(row) for row in connection.execute("SELECT * FROM materials")]
+
+    assert course["sync_status"] == "ready"
+    assert course["last_synced_at"] is not None
+    assert tuple(material) == ("indexed", "file_1", None, None)
+    assert "Read chapter 1 before class." not in str(materials)
+
+
+def test_sync_endpoint_marks_partial_when_signed_file_download_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main, db_path = _import_main(tmp_path, monkeypatch)
+    fake_openai = RouteFakeOpenAIClient(batch_status="completed")
+
+    def fail_urlopen(*_args: object, **_kwargs: object) -> object:
+        raise URLError("download blocked")
+
+    monkeypatch.setattr("backend.course_index.sync.urlopen", fail_urlopen)
+
+    with TestClient(main.app) as client:
+        main.app.state.openai_client_factory = lambda _config: fake_openai
+        course_index_id = _prepared_consented_course(client, db_path)
+        response = client.post(
+            "/course-index/sync",
+            json={
+                "courseIndexId": course_index_id,
+                "materials": [
+                    {
+                        "materialKey": "page:partial",
+                        "kind": "page",
+                        "title": "Overview",
+                        "body": "Usable native body.",
+                    }
+                ],
+                "signedFiles": [
+                    {
+                        "materialKey": "file:broken",
+                        "fileId": "broken",
+                        "fileName": "broken.pdf",
+                        "contentType": "application/pdf",
+                        "signedUrl": "https://signed.example.invalid/secret",
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["syncStatus"] == "partial"
+    assert [call["file_name"] for call in fake_openai.upload_file_calls] == [
+        "Overview.md"
+    ]
+
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        materials = {
+            row["material_key"]: dict(row)
+            for row in connection.execute("SELECT * FROM materials")
+        }
+        sync_run = connection.execute(
+            "SELECT status, indexed_count, failed_count FROM sync_runs WHERE course_id = ?",
+            (course_index_id,),
+        ).fetchone()
+
+    assert materials["page:partial"]["status"] == "indexed"
+    assert materials["file:broken"]["status"] == "failed"
+    assert materials["file:broken"]["error_type"] == "file_upload_failed"
+    assert tuple(sync_run) == ("partial", 1, 1)
+    assert "Usable native body." not in str(materials)
+    assert "https://signed.example.invalid/secret" not in str(materials)
+
+
+def test_sync_endpoint_marks_failed_when_no_source_can_be_indexed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main, db_path = _import_main(tmp_path, monkeypatch)
+    fake_openai = RouteFakeOpenAIClient(batch_status="completed")
+
+    with TestClient(main.app) as client:
+        main.app.state.openai_client_factory = lambda _config: fake_openai
+        course_index_id = _prepared_consented_course(client, db_path)
+        response = client.post(
+            "/course-index/sync",
+            json={
+                "courseIndexId": course_index_id,
+                "materials": [
+                    {
+                        "materialKey": "file:missing-signed-url",
+                        "kind": "file",
+                        "title": "Unusable Canvas file",
+                    }
+                ],
+                "signedFiles": [],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["syncStatus"] == "failed"
+    assert fake_openai.upload_file_calls == []
+    assert fake_openai.attach_file_batch_calls == []
+
+    with sqlite3.connect(db_path) as connection:
+        course_status = connection.execute(
+            "SELECT sync_status FROM courses WHERE id = ?",
+            (course_index_id,),
+        ).fetchone()[0]
+        sync_run = connection.execute(
+            "SELECT status, indexed_count, failed_count FROM sync_runs WHERE course_id = ?",
+            (course_index_id,),
+        ).fetchone()
+
+    assert course_status == "failed"
+    assert sync_run == ("failed", 0, 0)
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Authorization": "Bearer canvas-token"},
+        {"Cookie": "canvas_session=secret"},
+    ],
+)
+def test_sync_endpoint_rejects_http_credential_headers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    headers: dict[str, str],
+) -> None:
+    main, _db_path = _import_main(tmp_path, monkeypatch)
+    fake_openai = RouteFakeOpenAIClient()
+
+    with TestClient(main.app) as client:
+        main.app.state.openai_client_factory = lambda _config: fake_openai
+        response = client.post(
+            "/course-index/sync",
+            headers=headers,
+            json={"courseIndexId": "course_any", "materials": [], "signedFiles": []},
+        )
+
+    assert response.status_code == 400
+    assert "Cookie or Authorization" in response.json()["detail"]
+    assert fake_openai.upload_file_calls == []
+    assert fake_openai.attach_file_batch_calls == []
+
+
+@pytest.mark.parametrize(
+    "forbidden_field",
+    ["headers", "requestHeaders", "credentials", "cookie", "authorization"],
+)
+def test_sync_endpoint_rejects_signed_file_credential_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    forbidden_field: str,
+) -> None:
+    main, _db_path = _import_main(tmp_path, monkeypatch)
+    payload = {
+        "courseIndexId": "course_any",
+        "materials": [],
+        "signedFiles": [
+            {
+                "materialKey": "file:secret",
+                "fileId": "secret",
+                "signedUrl": "https://signed.example.invalid/secret",
+                forbidden_field: {"Authorization": "Bearer token"},
+            }
+        ],
+    }
+
+    if forbidden_field in {"credentials", "cookie", "authorization"}:
+        payload["signedFiles"][0][forbidden_field] = "secret"
+
+    with TestClient(main.app) as client:
+        response = client.post("/course-index/sync", json=payload)
+
+    assert response.status_code == 422
+    assert "request credential fields" in str(response.json()["detail"])
+
+
 class RouteFakeOpenAIClient:
-    def __init__(self) -> None:
+    def __init__(self, *, batch_status: str = "completed") -> None:
+        self.batch_status = batch_status
         self.create_vector_store_calls: list[dict[str, object]] = []
+        self.upload_file_calls: list[dict[str, Any]] = []
+        self.attach_file_batch_calls: list[dict[str, Any]] = []
 
     def create_vector_store(
         self,
@@ -995,6 +1246,84 @@ class RouteFakeOpenAIClient:
             }
         )
         return VectorStore(id="vs_route_created", name=name, status="in_progress")
+
+    def upload_file(
+        self,
+        file_name: str,
+        content_bytes_or_stream: FileContent,
+    ) -> UploadedFile:
+        content = _bytes_content(content_bytes_or_stream)
+        file_id = f"file_{len(self.upload_file_calls) + 1}"
+        self.upload_file_calls.append(
+            {
+                "file_name": file_name,
+                "content": content,
+            }
+        )
+        return UploadedFile(id=file_id, filename=file_name, bytes=len(content))
+
+    def attach_file_batch(
+        self,
+        vector_store_id: str,
+        files_with_attributes: Sequence[VectorStoreFileAttachment],
+    ) -> FileBatch:
+        files = list(files_with_attributes)
+        self.attach_file_batch_calls.append(
+            {
+                "vector_store_id": vector_store_id,
+                "files": files,
+            }
+        )
+        count_key = "completed" if self.batch_status == "completed" else "in_progress"
+        return FileBatch(
+            id=f"batch_{len(self.attach_file_batch_calls)}",
+            vector_store_id=vector_store_id,
+            status=self.batch_status,
+            file_counts={count_key: len(files)},
+        )
+
+
+def _prepared_consented_course(
+    client: TestClient,
+    db_path: Path,
+    *,
+    vector_store_id: str = "vs_ready",
+) -> str:
+    prepare_response = client.post(
+        "/course-index/prepare",
+        json={
+            "canvasOrigin": "https://canvas.example.edu",
+            "courseId": "12345",
+            "localProfileId": "profile_abc",
+            "manifest": {"materials": [], "placements": []},
+        },
+    )
+    assert prepare_response.status_code == 200
+    course_index_id = prepare_response.json()["courseIndexId"]
+    consent_response = client.post(
+        "/course-index/consent",
+        json={"courseIndexId": course_index_id, "granted": True},
+    )
+    assert consent_response.status_code == 200
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE courses
+            SET vector_store_id = ?, sync_status = ?
+            WHERE id = ?
+            """,
+            (vector_store_id, "pending", course_index_id),
+        )
+
+    return course_index_id
+
+
+def _bytes_content(value: FileContent) -> bytes:
+    if isinstance(value, bytes):
+        return value
+
+    return value.read()
 
 
 def _import_main(

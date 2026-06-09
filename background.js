@@ -1,6 +1,7 @@
 const BACKEND_BASE_URL = "http://localhost:8000";
 const BACKEND_EXTRACT_URL = `${BACKEND_BASE_URL}/extract`;
 const BACKEND_COURSE_INDEX_PREPARE_URL = `${BACKEND_BASE_URL}/course-index/prepare`;
+const BACKEND_COURSE_INDEX_SYNC_URL = `${BACKEND_BASE_URL}/course-index/sync`;
 const BACKEND_COURSE_INDEX_VECTOR_STORE_URL = `${BACKEND_BASE_URL}/course-index/vector-store`;
 const CONTENT_SCRIPT_FILES = [
   "canvas/detect.js",
@@ -220,6 +221,31 @@ async function prepareCourseIndex(manifest) {
   return response.json();
 }
 
+async function syncCourseIndex(courseIndexId, options = {}) {
+  if (!courseIndexId) {
+    throw new Error("Prepare a course index before syncing course materials.");
+  }
+
+  const response = await fetch(BACKEND_COURSE_INDEX_SYNC_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      courseIndexId,
+      materials: options.materials || [],
+      signedFiles: options.signedFiles || []
+    })
+  });
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data?.detail || `Course index sync returned ${response.status}.`);
+  }
+
+  return data;
+}
+
 async function setupCourseVectorStore(courseIndexId, consentGranted = true) {
   if (!courseIndexId) {
     throw new Error("Collect course materials before creating a vector store.");
@@ -277,10 +303,67 @@ async function getActiveCourseMaterials() {
   };
 }
 
+function getOriginFromUrl(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+}
+
+function getExpectedCanvasOrigin(payload = {}) {
+  return getOriginFromUrl(payload.canvasOrigin || payload.manifest?.canvasOrigin || "");
+}
+
+function getExpectedCourseId(payload = {}) {
+  return String(payload.courseId || payload.manifest?.courseId || "").trim();
+}
+
+function assertActiveContextMatchesExpectedCourse(context, payload = {}) {
+  const expectedCourseId = getExpectedCourseId(payload);
+  const expectedCanvasOrigin = getExpectedCanvasOrigin(payload);
+  const activeCanvasOrigin = getOriginFromUrl(context.url);
+
+  if (expectedCourseId && expectedCourseId !== context.routeInfo?.courseId) {
+    throw new Error("The active Canvas tab is no longer on the expected course.");
+  }
+
+  if (expectedCanvasOrigin && expectedCanvasOrigin !== activeCanvasOrigin) {
+    throw new Error("The active Canvas tab is no longer on the expected Canvas origin.");
+  }
+}
+
+async function resolveActiveCourseSignedFiles(payload = {}) {
+  const context = await assertActiveTabIsCanvas();
+  assertActiveContextMatchesExpectedCourse(context, payload);
+  await assertTabHasCanvasDom(context);
+
+  const response = await sendMessageToTabWithInjectionFallback(
+    { id: context.tabId, url: context.url },
+    {
+      type: "RESOLVE_CANVAS_SIGNED_FILES",
+      canvasOrigin: getExpectedCanvasOrigin(payload) || getOriginFromUrl(context.url),
+      courseId: getExpectedCourseId(payload) || context.routeInfo.courseId,
+      materials: payload.materials || []
+    }
+  );
+
+  if (!response?.success) {
+    throw new Error(response?.error || "Failed to resolve Canvas signed files.");
+  }
+
+  return {
+    signedFiles: response.data?.signedFiles || [],
+    warnings: response.data?.warnings || []
+  };
+}
+
 if (globalThis.__CANVASGPT_TEST__) {
   globalThis.CanvasGptBackground = {
     createCourseCollectionMessage,
     prepareCourseIndex,
+    resolveActiveCourseSignedFiles,
+    syncCourseIndex,
     setupCourseVectorStore
   };
 }
@@ -381,6 +464,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "SETUP_COURSE_VECTOR_STORE") {
     setupCourseVectorStore(message.courseIndexId, message.consentGranted !== false)
+      .then((data) => sendResponse({ success: true, data }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+
+    return true;
+  }
+
+  if (message.type === "RESOLVE_ACTIVE_COURSE_SIGNED_FILES") {
+    resolveActiveCourseSignedFiles({
+      canvasOrigin: message.canvasOrigin,
+      courseId: message.courseId,
+      manifest: message.manifest,
+      materials: message.materials
+    })
+      .then((data) => sendResponse({ success: true, data }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+
+    return true;
+  }
+
+  if (message.type === "SYNC_COURSE_INDEX") {
+    syncCourseIndex(message.courseIndexId, {
+      materials: message.materials,
+      signedFiles: message.signedFiles
+    })
       .then((data) => sendResponse({ success: true, data }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
 

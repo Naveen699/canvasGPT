@@ -180,6 +180,49 @@ class CourseIndexPrepareRequest(CourseIndexBaseModel):
         return value is not None and bool(value.strip())
 
 
+class CourseIndexSyncMaterial(CourseIndexMaterial):
+    body: str | None = Field(default=None, exclude=True)
+
+
+class CourseIndexSignedFile(CourseIndexBaseModel):
+    material_key: str = Field(alias="materialKey", min_length=1)
+    file_id: str = Field(alias="fileId", min_length=1)
+    file_name: str | None = Field(default=None, alias="fileName")
+    content_type: str | None = Field(default=None, alias="contentType")
+    size: int | None = Field(default=None, ge=0)
+    signed_url: str = Field(alias="signedUrl", min_length=1, exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_request_credentials(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        forbidden_fields = _forbidden_signed_file_fields(data)
+        if forbidden_fields:
+            field_list = ", ".join(sorted(forbidden_fields))
+            raise ValueError(
+                "signed file payload cannot include request credential fields: "
+                f"{field_list}"
+            )
+
+        return data
+
+    @field_validator("file_name", "content_type", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: Any) -> str | None:
+        return _compact_optional(value)
+
+
+class CourseIndexSyncRequest(CourseIndexBaseModel):
+    course_index_id: str = Field(alias="courseIndexId", min_length=1)
+    materials: list[CourseIndexSyncMaterial] = Field(default_factory=list)
+    signed_files: list[CourseIndexSignedFile] = Field(
+        default_factory=list,
+        alias="signedFiles",
+    )
+
+
 class CourseIndexConsentRequest(CourseIndexBaseModel):
     course_index_id: str = Field(alias="courseIndexId", min_length=1)
     consent_granted: bool = Field(
@@ -237,6 +280,18 @@ class CourseIndexConsentResponse(CourseIndexBaseModel):
     consent_granted: bool = Field(alias="consentGranted")
 
 
+class CourseIndexSyncResponse(CourseIndexBaseModel):
+    course_index_id: str = Field(alias="courseIndexId")
+    generation_id: str | None = Field(default=None, alias="generationId")
+    sync_status: str = Field(alias="syncStatus")
+    native_indexed_count: int = Field(default=0, alias="nativeIndexedCount")
+    file_indexed_count: int = Field(default=0, alias="fileIndexedCount")
+    pending_file_count: int = Field(default=0, alias="pendingFileCount")
+    skipped_count: int = Field(default=0, alias="skippedCount")
+    failed_count: int = Field(default=0, alias="failedCount")
+    warnings: list[CourseIndexWarning] = Field(default_factory=list)
+
+
 class CourseIndexVectorStoreRequest(CourseIndexBaseModel):
     course_index_id: str = Field(alias="courseIndexId", min_length=1)
     consent_granted: bool | None = Field(
@@ -269,3 +324,22 @@ def _compact_optional(value: Any) -> str | None:
 
     stripped = str(value).strip()
     return stripped or None
+
+
+def _forbidden_signed_file_fields(data: dict[str, Any]) -> set[str]:
+    forbidden_names = {
+        "headers",
+        "requestheaders",
+        "credentials",
+        "cookie",
+        "authorization",
+    }
+    return {
+        key
+        for key in data
+        if _normalize_security_field_name(key) in forbidden_names
+    }
+
+
+def _normalize_security_field_name(value: object) -> str:
+    return "".join(character for character in str(value).lower() if character.isalnum())

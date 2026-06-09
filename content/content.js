@@ -103,6 +103,18 @@ async function getCurrentCourseMaterialsWithManifest(options = {}) {
   return { data, manifest };
 }
 
+async function resolveCanvasSignedFiles(options = {}) {
+  if (!window.CanvasSessionApi?.resolveSignedFilesForCourseMaterials) {
+    throw new Error("Canvas API client is not loaded.");
+  }
+
+  return window.CanvasSessionApi.resolveSignedFilesForCourseMaterials({
+    canvasOrigin: options.canvasOrigin,
+    courseId: options.courseId,
+    materials: options.materials || []
+  });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "EXTRACT_PAGE_DATA") {
     try {
@@ -141,6 +153,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         sendResponse({ success: true, data: manifest });
       })
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+
+    return true;
+  }
+
+  if (message.type === "RESOLVE_CANVAS_SIGNED_FILES") {
+    resolveCanvasSignedFiles({
+      canvasOrigin: message.canvasOrigin,
+      courseId: message.courseId,
+      materials: message.materials
+    })
+      .then((data) => sendResponse({ success: true, data }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
 
     return true;

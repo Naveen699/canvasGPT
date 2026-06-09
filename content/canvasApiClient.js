@@ -169,6 +169,76 @@ function getUniqueFiles(files = []) {
   });
 }
 
+function getFileIdFromMaterial(material = {}) {
+  const materialKeyFileId = String(material.materialKey || "").match(/^file:(.+)$/)?.[1] || "";
+
+  return compactString(
+    material.fileId ||
+      material.file_id ||
+      material.id ||
+      material.contentId ||
+      material.content_id ||
+      materialKeyFileId
+  );
+}
+
+function normalizeFileContentType(file = {}) {
+  return compactString(file.contentType || file.content_type || file["content-type"]);
+}
+
+function normalizeFileName(file = {}) {
+  return compactString(file.fileName || file.filename || file.display_name || file.name);
+}
+
+function normalizeSignedUrlPayload(payload) {
+  if (typeof payload === "string") {
+    return compactString(payload);
+  }
+
+  return compactString(payload?.public_url || payload?.publicUrl || payload?.url || payload?.href);
+}
+
+function normalizeSignedFile(material, verifiedFile, publicUrlPayload) {
+  const expectedFileId = getFileIdFromMaterial(material);
+  const verifiedFileId = compactString(verifiedFile?.id);
+
+  if (!expectedFileId) {
+    throw new Error("File material is missing a Canvas file id.");
+  }
+
+  if (!verifiedFileId || verifiedFileId !== expectedFileId) {
+    throw new Error("Canvas file metadata did not match the requested file.");
+  }
+
+  const signedUrl = normalizeSignedUrlPayload(publicUrlPayload);
+
+  if (!signedUrl) {
+    throw new Error("Canvas did not return a signed file URL.");
+  }
+
+  return {
+    materialKey: compactString(material.materialKey) || `file:${verifiedFileId}`,
+    fileId: verifiedFileId,
+    fileName: normalizeFileName(verifiedFile) || normalizeFileName(material),
+    contentType: normalizeFileContentType(verifiedFile) || normalizeFileContentType(material),
+    size: Number.isFinite(Number(verifiedFile?.size))
+      ? Number(verifiedFile.size)
+      : Number.isFinite(Number(material?.size))
+        ? Number(material.size)
+        : 0,
+    signedUrl
+  };
+}
+
+function signedFileWarning(material, reason, message) {
+  return {
+    materialKey: compactString(material?.materialKey),
+    title: compactString(material?.title || material?.fileName || material?.file_name),
+    reason,
+    message: compactString(message) || "Canvas file access could not be resolved."
+  };
+}
+
 async function loadOptionalMaterial(name, loadFn) {
   try {
     return {
@@ -460,6 +530,53 @@ async function getFilesByIds(client, fileIds) {
   };
 }
 
+async function resolveSignedFilesForCourseMaterials(options = {}) {
+  const courseId = getCurrentCourseId();
+  const expectedCourseId = compactString(options.courseId);
+  const expectedCanvasOrigin = compactString(options.canvasOrigin);
+
+  if (expectedCourseId && expectedCourseId !== courseId) {
+    throw new Error("The active Canvas tab is no longer on the expected course.");
+  }
+
+  if (expectedCanvasOrigin && expectedCanvasOrigin !== window.location.origin) {
+    throw new Error("The active Canvas tab is no longer on the expected Canvas origin.");
+  }
+
+  const client = new CanvasSessionApiClient();
+  await confirmCanvasCourse(client, courseId);
+
+  const results = await Promise.all(
+    (options.materials || []).map(async (material) => {
+      try {
+        const fileId = getFileIdFromMaterial(material);
+
+        if (!fileId) {
+          throw new Error("Selected file material is missing a Canvas file id.");
+        }
+
+        const verifiedFile = await client.getFile(fileId);
+        const publicUrlPayload = await client.getFilePublicUrl(fileId);
+
+        return {
+          signedFile: normalizeSignedFile(material, verifiedFile, publicUrlPayload),
+          warning: null
+        };
+      } catch (error) {
+        return {
+          signedFile: null,
+          warning: signedFileWarning(material, "canvas_file_access_failed", error.message)
+        };
+      }
+    })
+  );
+
+  return {
+    signedFiles: results.flatMap((result) => (result.signedFile ? [result.signedFile] : [])),
+    warnings: results.flatMap((result) => (result.warning ? [result.warning] : []))
+  };
+}
+
 function normalizeCourseMaterial(type, item, courseId) {
   const id = item.id || item.page_id || item.url || item.html_url || item.title;
   const htmlUrl =
@@ -638,5 +755,6 @@ async function getCurrentCanvasCourseMaterials(options = {}) {
 
 window.CanvasSessionApi = {
   CanvasSessionApiClient,
-  getCurrentCanvasCourseMaterials
+  getCurrentCanvasCourseMaterials,
+  resolveSignedFilesForCourseMaterials
 };
