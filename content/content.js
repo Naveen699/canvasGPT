@@ -88,6 +88,21 @@ function getCanvasPageVerification() {
   return getCanvasPageDetection();
 }
 
+async function getCurrentCourseMaterialsWithManifest(options = {}) {
+  if (!window.CanvasSessionApi?.getCurrentCanvasCourseMaterials) {
+    throw new Error("Canvas API client is not loaded.");
+  }
+
+  const data = await window.CanvasSessionApi.getCurrentCanvasCourseMaterials({
+    localProfileId: options.localProfileId
+  });
+  const manifest = window.CanvasManifestBuilder?.buildManifest
+    ? window.CanvasManifestBuilder.buildManifest(data)
+    : null;
+
+  return { data, manifest };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "EXTRACT_PAGE_DATA") {
     try {
@@ -110,18 +125,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "GET_CANVAS_COURSE_MATERIALS") {
-    if (!window.CanvasSessionApi?.getCurrentCanvasCourseMaterials) {
-      sendResponse({ success: false, error: "Canvas API client is not loaded." });
-      return true;
-    }
+    getCurrentCourseMaterialsWithManifest({ localProfileId: message.localProfileId })
+      .then(({ data, manifest }) => sendResponse({ success: true, data: { ...data, manifest } }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
 
-    window.CanvasSessionApi.getCurrentCanvasCourseMaterials()
-      .then((data) => {
-        const manifest = window.CanvasManifestBuilder?.buildManifest
-          ? window.CanvasManifestBuilder.buildManifest(data)
-          : null;
+    return true;
+  }
 
-        sendResponse({ success: true, data: { ...data, manifest } });
+  if (message.type === "GET_CANVAS_COURSE_MANIFEST") {
+    getCurrentCourseMaterialsWithManifest({ localProfileId: message.localProfileId })
+      .then(({ manifest }) => {
+        if (!manifest) {
+          throw new Error("Canvas manifest builder is not loaded.");
+        }
+
+        sendResponse({ success: true, data: manifest });
       })
       .catch((error) => sendResponse({ success: false, error: error.message }));
 

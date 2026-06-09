@@ -11,6 +11,7 @@ const CONTENT_SCRIPT_FILES = [
 importScripts(
   "canvas/detect.js",
   "settings/canvas-domains.js",
+  "settings/local-profile.js",
   "canvas/collect/types.js",
   "canvas/collect/status.js",
   "canvas/collect/active-page.js"
@@ -196,17 +197,50 @@ async function sendExtractedDataToBackend(pageData) {
   return response.json();
 }
 
+async function createCourseCollectionMessage(type) {
+  const localProfileId = await globalThis.CanvasLocalProfileSettings.getOrCreateLocalProfileId();
+
+  return {
+    type,
+    localProfileId
+  };
+}
+
 async function getActiveCourseMaterials() {
   const context = await assertActiveTabIsCanvas();
   await assertTabHasCanvasDom(context);
 
   const tab = { id: context.tabId, url: context.url };
-  const response = await sendMessageToTabWithInjectionFallback(tab, {
-    type: "GET_CANVAS_COURSE_MATERIALS"
-  });
+  const response = await sendMessageToTabWithInjectionFallback(
+    tab,
+    await createCourseCollectionMessage("GET_CANVAS_COURSE_MATERIALS")
+  );
 
   if (!response?.success) {
     throw new Error(response?.error || "Failed to load Canvas course materials.");
+  }
+
+  return response.data;
+}
+
+if (globalThis.__CANVASGPT_TEST__) {
+  globalThis.CanvasGptBackground = {
+    createCourseCollectionMessage
+  };
+}
+
+async function getActiveCourseManifest() {
+  const context = await assertActiveTabIsCanvas();
+  await assertTabHasCanvasDom(context);
+
+  const tab = { id: context.tabId, url: context.url };
+  const response = await sendMessageToTabWithInjectionFallback(
+    tab,
+    await createCourseCollectionMessage("GET_CANVAS_COURSE_MANIFEST")
+  );
+
+  if (!response?.success) {
+    throw new Error(response?.error || "Failed to load Canvas course manifest.");
   }
 
   return response.data;
@@ -269,6 +303,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "GET_ACTIVE_COURSE_MATERIALS") {
     getActiveCourseMaterials()
+      .then((data) => sendResponse({ success: true, data }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+
+    return true;
+  }
+
+  if (message.type === "GET_ACTIVE_COURSE_MANIFEST") {
+    getActiveCourseManifest()
       .then((data) => sendResponse({ success: true, data }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
 

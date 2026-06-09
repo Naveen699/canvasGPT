@@ -89,7 +89,15 @@ function createLink(className, text, href) {
 }
 
 function getManifest(data) {
-  return data.manifest || null;
+  if (data?.manifest) {
+    return data.manifest;
+  }
+
+  if (Array.isArray(data?.materials) && Array.isArray(data?.placements)) {
+    return data;
+  }
+
+  return null;
 }
 
 function getPlacementCountByMaterialKey(placements = []) {
@@ -262,7 +270,7 @@ function normalizeFiles(files = []) {
 function renderMaterials(data) {
   const manifest = getManifest(data);
 
-  const materials = data.materials || {};
+  const materials = data?.materials || {};
   clearElement(materialsList);
 
   if (manifest) {
@@ -310,7 +318,7 @@ loadMaterialsBtn.addEventListener("click", async () => {
 
   try {
     const data = await sendRuntimeMessage({
-      type: "GET_ACTIVE_COURSE_MATERIALS"
+      type: "GET_ACTIVE_COURSE_MANIFEST"
     });
 
     renderSummary(data);

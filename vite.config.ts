@@ -18,6 +18,7 @@ const extensionFiles = [
   "content/canvasApiClient.js",
   "content/content.js",
   "settings/canvas-domains.js",
+  "settings/local-profile.js",
   "sidepanel/sidepanel.html",
   "sidepanel/sidepanel.css",
   "sidepanel/sidepanel.js",

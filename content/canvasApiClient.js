@@ -61,6 +61,10 @@ function getUniqueValues(values) {
   return Array.from(new Set(values.filter(Boolean).map(String)));
 }
 
+function compactString(value) {
+  return value === undefined || value === null ? "" : String(value).trim();
+}
+
 function isPresentationFile(file) {
   const contentType = file?.["content-type"] || file?.content_type || "";
   const filename = file?.filename || file?.display_name || "";
@@ -182,6 +186,24 @@ async function loadOptionalMaterial(name, loadFn) {
   }
 }
 
+function normalizeCollectionError(error) {
+  return {
+    name: compactString(error?.name || error?.type),
+    message: compactString(error?.message || error?.error || error)
+  };
+}
+
+function getModuleItemLoadErrors(modules = []) {
+  return modules
+    .filter((module) => compactString(module?.itemsLoadError))
+    .map((module) => ({
+      name: "module_items",
+      message: compactString(module.itemsLoadError),
+      moduleId: compactString(module.id),
+      moduleName: compactString(module.name)
+    }));
+}
+
 function isLikelyCanvasCourse(data, courseId) {
   if (!data || typeof data !== "object") {
     return false;
@@ -197,6 +219,13 @@ function isLikelyCanvasCourse(data, courseId) {
   ].some((field) => Object.prototype.hasOwnProperty.call(data, field));
 
   return idMatches && hasCanvasCourseFields;
+}
+
+function getCanvasUserIdFromProfile(profile) {
+  const id = profile?.id ?? profile?.user_id ?? profile?.userId;
+  const value = id === undefined || id === null ? "" : String(id).trim();
+
+  return value || "";
 }
 
 async function confirmCanvasCourse(client, courseId) {
@@ -279,6 +308,10 @@ class CanvasSessionApiClient {
     return this.request(`/api/v1/courses/${encodePathSegment(courseId)}`, params).then(
       ({ data }) => data
     );
+  }
+
+  getCurrentUserProfile() {
+    return this.request("/api/v1/users/self/profile").then(({ data }) => data);
   }
 
   listCourseFiles(courseId, options = {}) {
@@ -501,17 +534,19 @@ function getLinksFromModuleMaterials(materials = []) {
   });
 }
 
-async function getCurrentCanvasCourseMaterials() {
+async function getCurrentCanvasCourseMaterials(options = {}) {
   const courseId = getCurrentCourseId();
   const client = new CanvasSessionApiClient();
   const course = await confirmCanvasCourse(client, courseId);
   const [
+    currentUserResult,
     modulesResult,
     pagesResult,
     assignmentsResult,
     announcementsResult,
     discussionsResult
   ] = await Promise.all([
+    loadOptionalMaterial("currentUser", () => client.getCurrentUserProfile()),
     loadOptionalMaterial("modules", () => client.listModuleGraph(courseId)),
     loadOptionalMaterial("pages", () => client.listCoursePages(courseId, { include: ["body"] })),
     loadOptionalMaterial("assignments", () => client.listAssignments(courseId, { orderBy: "position" })),
@@ -526,6 +561,8 @@ async function getCurrentCanvasCourseMaterials() {
     )
   ]);
   const modules = modulesResult.data || [];
+  const canvasUserId = getCanvasUserIdFromProfile(currentUserResult.data);
+  const localProfileId = canvasUserId ? "" : compactString(options.localProfileId);
   const pages = pagesResult.data || [];
   const assignments = assignmentsResult.data || [];
   const announcements = announcementsResult.data || [];
@@ -567,12 +604,19 @@ async function getCurrentCanvasCourseMaterials() {
     assignmentsResult.error,
     announcementsResult.error,
     discussionsResult.error,
+    currentUserResult.error,
     ...linkedFilesResult.errors
-  ].filter(Boolean);
+  ]
+    .filter(Boolean)
+    .map(normalizeCollectionError);
+  const collectionErrors = [...errors, ...getModuleItemLoadErrors(modules)];
 
   return {
     canvasBaseUrl: window.location.origin,
     courseId,
+    canvasUserId,
+    localProfileId,
+    currentUser: canvasUserId ? { id: canvasUserId } : null,
     course,
     modules,
     materials: {
@@ -585,8 +629,9 @@ async function getCurrentCanvasCourseMaterials() {
     files,
     presentationFiles: files.filter(isPresentationFile),
     links,
+    collectionErrors,
     errors,
-    unavailable: errors.map((error) => error.name),
+    unavailable: collectionErrors.map((error) => error.name),
     linkedFileIds
   };
 }
